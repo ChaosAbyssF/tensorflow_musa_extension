@@ -2,15 +2,19 @@
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/util/matmul_bcast.h"
 #include "tensorflow/core/framework/bfloat16.h"
-
 #include "tensorflow/core/framework/op.h"
 #include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/framework/common_shape_fns.h"
+
+// MUSA muDNN 核心头文件
 #include <mudnn.h>
+#include <mudnn_xmma.h> // 包含非 Batch 版 MatMul 定义
 #include "utils_op.h"
 
 namespace tensorflow {
 namespace musa {
+
+// === 1. 算子注册 (Op Registration) ===
 
 REGISTER_OP("MusaBatchMatMulV2")
     .Input("x: T")
@@ -30,6 +34,8 @@ REGISTER_OP("MusaMatMul")
     .Attr("transpose_b: bool = false")
     .SetShapeFn(shape_inference::MatMulShape);
 
+// === 2. 算子实现 (Op Implementation) ===
+
 template <typename T>
 class MusaMatMulOp : public MusaOpKernel {
  public:
@@ -37,9 +43,11 @@ class MusaMatMulOp : public MusaOpKernel {
     trans_a_ = false;
     trans_b_ = false;
 
+    // 处理标准 MatMul 属性
     if (ctx->HasAttr("transpose_a")) ctx->GetAttr("transpose_a", &trans_a_);
     if (ctx->HasAttr("transpose_b")) ctx->GetAttr("transpose_b", &trans_b_);
 
+    // 处理 BatchMatMulV2 属性 (adj_x -> transpose_a)
     bool adj_x = false;
     bool adj_y = false;
     if (ctx->GetAttr("adj_x", &adj_x).ok()) trans_a_ = adj_x;
@@ -47,16 +55,17 @@ class MusaMatMulOp : public MusaOpKernel {
   }
 
   void Compute(OpKernelContext* ctx) override {
-    //fprintf(stderr, ">>> [MUSA_TRACE_AUTO] %s\n", name().c_str());
     const Tensor& in0 = ctx->input(0);
     const Tensor& in1 = ctx->input(1);
 
+    // 形状校验与广播计算
     MatMulBCast bcast(in0.shape().dim_sizes(), in1.shape().dim_sizes());
     OP_REQUIRES(ctx, bcast.IsValid(),
                 errors::InvalidArgument("Incompatible shapes: ",
                                         in0.shape().DebugString(), " vs ",
                                         in1.shape().DebugString()));
 
+    // 矩阵维度提取
     int64 d0 = in0.dim_size(in0.dims() - 2);
     int64 d1 = in0.dim_size(in0.dims() - 1);
     int64 d2 = in1.dim_size(in1.dims() - 2);
@@ -70,6 +79,7 @@ class MusaMatMulOp : public MusaOpKernel {
     OP_REQUIRES(ctx, k == k_check,
                 errors::InvalidArgument("Matrix size-incompatible: In[0] mismatch In[1]"));
 
+    // 输出 Tensor 分配
     TensorShape out_shape = bcast.output_batch_shape();
     out_shape.AddDim(m);
     out_shape.AddDim(n);
@@ -79,33 +89,54 @@ class MusaMatMulOp : public MusaOpKernel {
     if (out->NumElements() == 0) return;
 
     auto& handle = GetHandleByCtx(ctx);
+    handle.SetAllowTF32(false);
+    mTensor mt_a = CreateMTensor(in0);
+    mTensor mt_b = CreateMTensor(in1);
+    mTensor mt_out = CreateMTensor(*out);
 
-    mBatchMatMul matmul_op;
-    matmul_op.SetTranspose(trans_a_, trans_b_);
-    matmul_op.SetAlpha(1.0);
-    matmul_op.SetBeta(0.0);
-
-    mTensor mt_a = CreateMTensor(in0, format_);
-    mTensor mt_b = CreateMTensor(in1, format_);
-    mTensor mt_out = CreateMTensor(*out, format_);
-
+    // Lambda: 针对 Batch 接口的 2D 降级补齐
     auto FixToBatchFormat = [](mTensor& mt, const Tensor& t) {
       if (t.dims() == 2) {
         int64_t rows = t.dim_size(0);
         int64_t cols = t.dim_size(1);
-        mt.SetNdInfo({1, rows, cols},
-                     {rows * cols, cols, 1});
+        mt.SetNdInfo({1, rows, cols}, {rows * cols, cols, 1});
       }
     };
 
-    FixToBatchFormat(mt_a, in0);
-    FixToBatchFormat(mt_b, in1);
-    FixToBatchFormat(mt_out, *out);
+    // --- 🚀 核心分流逻辑 (Dispatch Logic) ---
+    ::musa::dnn::Status status;
 
-    auto status = matmul_op.Run(handle, mt_out, mt_a, mt_b);
+    if (in0.dims() == 2 && in1.dims() == 2) {
+        // [路径 A] 调用高精度非 Batch MatMul (针对 2D 全连接等场景)
+        mMatMul op; 
+        op.SetTranspose(trans_a_, trans_b_);
+        op.SetAlpha(1.0);
+        op.SetBeta(0.0);
+        
+        // 直接运行，不进行 Batch 维度的伪造
+        status = op.Run(handle, mt_out, mt_a, mt_b);
+        
+        OP_REQUIRES(ctx, status == ::musa::dnn::Status::SUCCESS,
+                    errors::Internal("MUSA MatMul (2D High Precision) execution failed. Status: ", (int)status));
+    } else {
+        // [路径 B] 调用 BatchMatMul 处理多维张量
+        mBatchMatMul op;
+        op.SetTranspose(trans_a_, trans_b_);
+        op.SetAlpha(1.0);
+        op.SetBeta(0.0);
+
+        // 统一格式化为 Batch 布局
+        FixToBatchFormat(mt_a, in0);
+        FixToBatchFormat(mt_b, in1);
+        FixToBatchFormat(mt_out, *out);
+
+        status = op.Run(handle, mt_out, mt_a, mt_b);
+
+        OP_REQUIRES(ctx, status == ::musa::dnn::Status::SUCCESS,
+                    errors::Internal("MUSA BatchMatMul execution failed. Status: ", (int)status));
+    }
     
-    OP_REQUIRES(ctx, status == ::musa::dnn::Status::SUCCESS,
-                errors::Internal("MUSA MatMul execution failed. Status: ", (int)status));
+    VLOG(1) << "MUSA MatMul execution finished successfully.";
   }
 
  private:
@@ -113,44 +144,32 @@ class MusaMatMulOp : public MusaOpKernel {
   bool trans_b_ = false;
 };
 
-#define REGISTER_MATMUL(TYPE)                                   \
-  REGISTER_KERNEL_BUILDER(Name("MatMul")                        \
-                              .Device("MUSA")                   \
-                              .TypeConstraint<TYPE>("T"),       \
+// === 3. 算子内核注册 (Kernel Registration) ===
+
+#define REGISTER_MUSA_MATMUL_ALL(TYPE)                                  \
+  REGISTER_KERNEL_BUILDER(Name("MatMul")                                \
+                              .Device("MUSA")                           \
+                              .TypeConstraint<TYPE>("T"),               \
+                          MusaMatMulOp<TYPE>);                          \
+  REGISTER_KERNEL_BUILDER(Name("BatchMatMulV2")                         \
+                              .Device("MUSA")                           \
+                              .TypeConstraint<TYPE>("T"),               \
+                          MusaMatMulOp<TYPE>);                          \
+  REGISTER_KERNEL_BUILDER(Name("MusaMatMul")                            \
+                              .Device("MUSA")                           \
+                              .TypeConstraint<TYPE>("T"),               \
+                          MusaMatMulOp<TYPE>);                          \
+  REGISTER_KERNEL_BUILDER(Name("MusaBatchMatMulV2")                     \
+                              .Device("MUSA")                           \
+                              .TypeConstraint<TYPE>("T"),               \
                           MusaMatMulOp<TYPE>);
 
-REGISTER_MATMUL(float);
-REGISTER_MATMUL(Eigen::half);
-REGISTER_MATMUL(bfloat16);
+REGISTER_MUSA_MATMUL_ALL(float);
+REGISTER_MUSA_MATMUL_ALL(double);
+REGISTER_MUSA_MATMUL_ALL(Eigen::half);
+REGISTER_MUSA_MATMUL_ALL(bfloat16);
 
-#define REGISTER_BATCH_MATMUL(TYPE)                             \
-  REGISTER_KERNEL_BUILDER(Name("BatchMatMulV2")                 \
-                              .Device("MUSA")                   \
-                              .TypeConstraint<TYPE>("T"),       \
-                          MusaMatMulOp<TYPE>);
-
-REGISTER_BATCH_MATMUL(float);
-REGISTER_BATCH_MATMUL(Eigen::half);
-REGISTER_BATCH_MATMUL(bfloat16); 
-
-#define REGISTER_MUSA_MATMUL(TYPE)                              \
-  REGISTER_KERNEL_BUILDER(Name("MusaMatMul")                    \
-                              .Device("MUSA")                   \
-                              .TypeConstraint<TYPE>("T"),       \
-                          MusaMatMulOp<TYPE>);                  \
-  REGISTER_KERNEL_BUILDER(Name("MusaBatchMatMulV2")            \
-                              .Device("MUSA")                   \
-                              .TypeConstraint<TYPE>("T"),       \
-                          MusaMatMulOp<TYPE>);
-
-REGISTER_MUSA_MATMUL(float);
-REGISTER_MUSA_MATMUL(Eigen::half);
-REGISTER_MUSA_MATMUL(bfloat16);
-
-#undef REGISTER_MATMUL
-#undef REGISTER_BATCH_MATMUL
-#undef REGISTER_MUSA_MATMUL
+#undef REGISTER_MUSA_MATMUL_ALL
 
 }  // namespace musa
 }  // namespace tensorflow
-

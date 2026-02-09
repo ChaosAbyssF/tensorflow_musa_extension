@@ -1,108 +1,170 @@
+/* Copyright @2020-2026 Moore Threads Technology Co., Ltd. All rights reserved. */
+
+#include <mudnn.h>
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/framework/tensor_shape.h"
-#include "mu/device/musa_memcpy.h" 
-#include "utils_op.h" // 假设 CreateMTensor 和 GetHandleByCtx 在这里
-#include <vector>
-#include <musa_runtime.h> // For musaStream_t
-#include <mudnn.h> // For musa::dnn::Tensor, musa::dnn::Concat, musa::dnn::Status
+#include "tensorflow/core/framework/types.h"
+#include "tensorflow/core/lib/core/errors.h"
+#include "utils_op.h" 
 
 namespace tensorflow {
 namespace musa {
 
+// =========================================================================
+// 1. MusaPackOp (Stack)
+// [终极修复版] 
+// 移除了复杂的 vector 容器，改用单一的 shared_dims 变量。
+// 确保内存地址绝对固定，不会被释放或移动。
+// =========================================================================
 template <typename T>
-class MusaPackOp : public MusaOpKernel {
+class MusaPackOp : public OpKernel {
  public:
-  explicit MusaPackOp(OpKernelConstruction* ctx) : MusaOpKernel(ctx) {
-    OP_REQUIRES_OK(ctx, ctx->GetAttr("axis", &axis_));
+  explicit MusaPackOp(OpKernelConstruction* context) : OpKernel(context) {
+    OP_REQUIRES_OK(context, context->GetAttr("axis", &axis_));
   }
 
-  void Compute(OpKernelContext* ctx) override {
-    const int N = ctx->num_inputs();
-    const Tensor& first_input = ctx->input(0);
-    const int dims = first_input.dims();
-    
-    int normalized_axis = axis_ < 0 ? axis_ + dims + 1 : axis_;
+  void Compute(OpKernelContext* c) override {
+    const int num = num_inputs();
+    const Tensor& first_input = c->input(0);
 
-    TensorShape out_shape = first_input.shape();
-    out_shape.InsertDim(normalized_axis, N);
+    int expanded_num_dims = first_input.dims() + 1;
+    int axis = axis_ < 0 ? axis_ + expanded_num_dims : axis_;
 
-    Tensor* output = nullptr;
-    OP_REQUIRES_OK(ctx, ctx->allocate_output(0, out_shape, &output));
+    TensorShape output_shape(first_input.shape());
+    output_shape.InsertDim(axis, num);
 
-    if (output->NumElements() == 0) return;
-
-    auto& handle = GetHandleByCtx(ctx);
-    musaStream_t stream = reinterpret_cast<musaStream_t>(handle.GetStream());
-
-    if (N == 1) {
-      musaMemcpyAsync(const_cast<char*>(output->tensor_data().data()),
-                      first_input.tensor_data().data(), first_input.TotalBytes(),
-                      musaMemcpyDeviceToDevice, stream);
+    if (num == 1) {
+      Tensor output;
+      CHECK(output.CopyFrom(first_input, output_shape));
+      c->set_output(0, output);
       return;
     }
 
-    // 【核心修正1】：移除所有关于数据类型的硬编码和转换。
-    // musa::dnn::Tensor 的数据类型应该由 CreateMTensor 自动处理。
-    // SetNdInfo 仅用于设置维度。
+    Tensor* output;
+    OP_REQUIRES_OK(c, c->allocate_output(0, output_shape, &output));
+    if (output->NumElements() == 0) return;
 
-    // 【核心修正2】：将维度信息存储为 int64_t 类型，以匹配 SetNdInfo 的要求。
-    std::vector<int64_t> expanded_dims_int64;
-    for (int i = 0; i < dims; ++i) {
-      expanded_dims_int64.push_back(static_cast<int64_t>(first_input.dim_size(i)));
+    // --- 计算统一的视图维度 ---
+    int64_t before_dim = 1;
+    for (int i = 0; i < axis; ++i) before_dim *= output_shape.dim_size(i);
+
+    int64_t after_dim = 1;
+    for (int i = axis + 1; i < output_shape.dims(); ++i) after_dim *= output_shape.dim_size(i);
+
+    const int64_t axis_dim = output_shape.dim_size(axis); 
+
+    // =================================================================
+    // [终极修复]
+    // 定义一个单一的 shared_dims 向量。
+    // 因为所有输入的 View 形状都是 [before_dim, after_dim]，
+    // 我们只需要这一份内存，并且它在 Compute 函数结束前绝对安全。
+    // =================================================================
+    std::vector<int64_t> shared_input_dims = {before_dim, after_dim};
+
+    // 构造输入列表
+    std::vector<::musa::dnn::Tensor> input_tensors;
+    input_tensors.reserve(num);
+
+    for (int i = 0; i < num; ++i) {
+      auto tmp_in = CreateMTensor(c->input(i));
+      
+      // 所有输入共享同一个 shape 数据的指针
+      // 因为 shared_input_dims 定义在循环外，地址固定且有效
+      tmp_in.SetNdInfo(2, shared_input_dims.data());
+      
+      input_tensors.push_back(tmp_in);
     }
-    // 在指定轴插入一个大小为 1 的维度，表示 Pack 的效果
-    expanded_dims_int64.insert(expanded_dims_int64.begin() + normalized_axis, 1);
 
-    std::vector<::musa::dnn::Tensor> mudnn_ins;
-    mudnn_ins.reserve(N);
+    auto& h = GetHandleByCtx(c);
+    ::musa::dnn::Concat concat;
+    auto out = CreateMTensor(*output);
     
-    for (int i = 0; i < N; ++i) {
-      const Tensor& input_tensor = ctx->input(i);
-      // CreateMTensor 应该负责将 TensorFlow Tensor 转换为 MUSA Tensor，
-      // 并正确设置其数据指针和数据类型。
-      ::musa::dnn::Tensor mt = CreateMTensor(input_tensor);
-      
-      // 【核心修正3】：调用 SetNdInfo 时，只传递维度数量和维度数组指针。
-      // 使用 int64_t 作为 ndims 的类型，与 dim 数组的类型保持一致。
-      auto status = mt.SetNdInfo(static_cast<int64_t>(expanded_dims_int64.size()), 
-                                 expanded_dims_int64.data()); 
-      
-      OP_REQUIRES(ctx, status == ::musa::dnn::Status::SUCCESS,
-                  errors::Internal("muDNN SetNdInfo failed for input ", i));
-      
-      mudnn_ins.push_back(mt);
-    }
+    // 输出视图
+    std::vector<int64_t> out_dims = {before_dim, after_dim * axis_dim};
+    out.SetNdInfo(static_cast<int>(out_dims.size()), out_dims.data());
 
-    ::musa::dnn::Tensor mudnn_out = CreateMTensor(*output);
-
-    ::musa::dnn::Concat concat_op;
-    concat_op.SetAxis(normalized_axis);
-
-    auto status = concat_op.Run(handle, mudnn_out, 
-                                static_cast<int>(mudnn_ins.size()), 
-                                mudnn_ins.data());
-
-    OP_REQUIRES(ctx, status == ::musa::dnn::Status::SUCCESS,
-                errors::Internal("MUSA Pack Run failed."));
+    concat.SetAxis(1); 
+    
+    // 执行计算
+    auto status = concat.Run(h, out, input_tensors.size(), input_tensors.data());
+    OP_REQUIRES(c, status == ::musa::dnn::Status::SUCCESS, errors::Internal("MUSA Pack Run failed"));
   }
 
  private:
   int axis_;
 };
 
-#define REGISTER_MUSA_PACK(TYPE)                                     \
-  REGISTER_KERNEL_BUILDER(                                           \
-      Name("Pack").Device("MUSA").TypeConstraint<TYPE>("T"),         \
-      MusaPackOp<TYPE>)
+// =========================================================================
+// 2. MusaUnpackOp (Unstack)
+// =========================================================================
+template <typename T>
+class MusaUnpackOp : public OpKernel {
+ public:
+  explicit MusaUnpackOp(OpKernelConstruction* context) : OpKernel(context) {
+    OP_REQUIRES_OK(context, context->GetAttr("axis", &axis_));
+  }
 
-REGISTER_MUSA_PACK(float);
-REGISTER_MUSA_PACK(int32);
-REGISTER_MUSA_PACK(int64);
-REGISTER_MUSA_PACK(Eigen::half);
+  void Compute(OpKernelContext* c) override {
+    const Tensor& input = c->input(0);
+    int axis = axis_ < 0 ? axis_ + input.dims() : axis_;
+    const int num = input.dim_size(axis);
 
-#undef REGISTER_MUSA_PACK
+    TensorShape output_shape = input.shape();
+    output_shape.RemoveDim(axis); 
 
-} // namespace musa
-} // namespace tensorflow
+    auto& h = GetHandleByCtx(c);
+    auto mudnn_in = CreateMTensor(input);
+    
+    std::vector<int64_t> starts(input.dims(), 0);
+
+    // 预先计算好 view dims (Unpack 的输入需要视为 [..., 1, ...])
+    std::vector<int64_t> shared_view_dims;
+    for(int d = 0; d < input.dims(); ++d) {
+        shared_view_dims.push_back(input.dim_size(d));
+    }
+    shared_view_dims[axis] = 1;
+
+    for (int i = 0; i < num; ++i) {
+      Tensor* output;
+      OP_REQUIRES_OK(c, c->allocate_output(i, output_shape, &output));
+      if (output->NumElements() == 0) continue;
+
+      auto mudnn_out = CreateMTensor(*output);
+      
+      // 使用循环外定义的 shared_view_dims，更安全
+      mudnn_out.SetNdInfo(static_cast<int>(shared_view_dims.size()), shared_view_dims.data());
+
+      ::musa::dnn::Permute slice_op;
+      std::fill(starts.begin(), starts.end(), 0);
+      starts[axis] = i;
+
+      auto status = slice_op.ConfigDimStrideForSlice(mudnn_out, mudnn_in, starts.data());
+      OP_REQUIRES(c, status == ::musa::dnn::Status::SUCCESS, 
+                  errors::Internal("MUSA Unpack ConfigDimStrideForSlice failed"));
+
+      status = slice_op.Run(h, mudnn_out, mudnn_in);
+      OP_REQUIRES(c, status == ::musa::dnn::Status::SUCCESS, 
+                  errors::Internal("MUSA Unpack Slice Run failed"));
+    }
+  }
+
+ private:
+  int axis_;
+};
+
+// --- 注册算子 ---
+#define REGISTER_KERNELS(type)                                           \
+  REGISTER_KERNEL_BUILDER(                                               \
+      Name("Pack").Device("MUSA").TypeConstraint<type>("T"), MusaPackOp<type>); \
+  REGISTER_KERNEL_BUILDER(                                               \
+      Name("Unpack").Device("MUSA").TypeConstraint<type>("T"), MusaUnpackOp<type>);
+
+REGISTER_KERNELS(float);
+REGISTER_KERNELS(double);
+REGISTER_KERNELS(int32);
+REGISTER_KERNELS(int64);
+REGISTER_KERNELS(Eigen::half);
+REGISTER_KERNELS(bfloat16);
+
+}  // namespace musa
+}  // namespace tensorflow

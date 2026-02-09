@@ -1,12 +1,15 @@
 #include <stdio.h>
 #include <vector>
-#include <musa_runtime.h> // 必须包含这个头文件以使用 musaGetDeviceCount
+#include <musa_runtime.h>
 
 #include "tensorflow/core/common_runtime/device_factory.h"
 #include "tensorflow/core/public/session_options.h"
 #include "tensorflow/core/framework/device_attributes.pb.h"
 #include "tensorflow/core/platform/env.h"
 #include "device/musa_device.h"
+
+// 【新增】必须包含这个头文件，才能获取 StreamExecutor
+#include "tensorflow/stream_executor/multi_platform_manager.h" 
 
 namespace tensorflow {
   void ForceMusaOptimizationPassRegistration();
@@ -19,16 +22,14 @@ class MusaDeviceFactory : public DeviceFactory {
  public:
   Status ListPhysicalDevices(std::vector<string>* devices) override {
     int count = 0;
-    // 【核心修复】先询问驱动有几张卡
     musaError_t err = musaGetDeviceCount(&count);
     if (err != musaSuccess) {
         fprintf(stderr, ">>>> [MUSA] ERROR: musaGetDeviceCount failed: %d\n", err);
-        return Status::OK(); // 返回空列表
+        return Status::OK();
     }
 
     fprintf(stderr, ">>>> [MUSA] DeviceFactory detected %d physical devices <<<<\n", count);
     
-    // 只循环实际存在的数量
     for (int i = 0; i < count; ++i) {
       devices->push_back(strings::StrCat("/physical_device:MUSA:", i));
     }
@@ -38,7 +39,6 @@ class MusaDeviceFactory : public DeviceFactory {
   Status CreateDevices(const SessionOptions& options, const string& name_prefix,
                        std::vector<std::unique_ptr<Device>>* devices) override {
     int count = 0;
-    // 【核心修复】再次确认数量（防止竞争条件）
     musaError_t err = musaGetDeviceCount(&count);
     if (err != musaSuccess) {
          return errors::Internal("Failed to get MUSA device count");
@@ -46,22 +46,34 @@ class MusaDeviceFactory : public DeviceFactory {
 
     fprintf(stderr, ">>>> [MUSA] DeviceFactory creating %d logical instances <<<<\n", count);
 
+    // 【关键步骤 1】获取 "MUSA" 平台管理器
+    // 如果这里报错，说明你没有注册 Platform (即缺少 musa_platform.cc)
+    auto platform_status = ::stream_executor::MultiPlatformManager::PlatformWithName("MUSA");
+    if (!platform_status.ok()) {
+        return platform_status.status();
+    }
+    auto* platform = platform_status.ValueOrDie();
+
     for (int i = 0; i < count; ++i) {
       DeviceAttributes attr;
-      // 这里的 i 是逻辑 ID (0, 1, 2...)，永远是合法的
       string name = strings::StrCat(name_prefix, "/device:MUSA:", i);
       attr.set_name(name);
       attr.set_device_type("MUSA");
-      
-      // 建议：实际显存大小也应该从 musaDeviceProp 查询，这里先保留你的硬编码
       attr.set_memory_limit(16ULL * 1024 * 1024 * 1024); 
-      
       attr.mutable_locality()->set_bus_id(i);
       attr.set_physical_device_desc(strings::StrCat("device: MUSA device ", i));
 
-      // 传入的 i 是逻辑 ID，直接传给 MusaDevice
+      // 【关键步骤 2】获取当前设备的 Executor
+      auto executor_status = platform->ExecutorForDevice(i);
+      if (!executor_status.ok()) {
+          return executor_status.status();
+      }
+      auto* executor = executor_status.ValueOrDie();
+
+      // 【关键步骤 3】依赖注入：把 executor 传给 MusaDevice
+      // (注意：这要求你已经改好了 MusaDevice 的构造函数)
       devices->push_back(std::unique_ptr<Device>(
-        new MusaDevice(Env::Default(), attr, i)
+        new MusaDevice(Env::Default(), attr, i, executor)
       ));
       
       fprintf(stderr, ">>>> [MUSA] Logical Device /device:MUSA:%d created. <<<<\n", i);
@@ -70,13 +82,12 @@ class MusaDeviceFactory : public DeviceFactory {
   }
 };
 
-// 注册优先级建议设高一点，或者保持 210
 REGISTER_LOCAL_DEVICE_FACTORY("MUSA", MusaDeviceFactory, 210);
 
 }  // namespace musa
 }  // namespace tensorflow
 
-// ... (后面的 Global Constructor 保持不变) ...
+
 
 extern "C" {
   void __attribute__((constructor)) OnMusaPluginLoad() {

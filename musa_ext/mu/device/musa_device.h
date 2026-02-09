@@ -17,7 +17,7 @@ namespace musa {
 
 class MusaDeviceContext : public DeviceContext {
  public:
-  explicit MusaDeviceContext(musaStream_t stream);
+  explicit MusaDeviceContext(musaStream_t stream, ::stream_executor::StreamExecutor* executor);
   ~MusaDeviceContext() override;
 
   ::stream_executor::Stream* stream() const override { return official_stream_; }
@@ -38,7 +38,8 @@ class MusaDeviceContext : public DeviceContext {
 
 class MusaDevice : public Device {
  public:
-  MusaDevice(Env* env, const DeviceAttributes& attributes, int device_id);
+  MusaDevice(Env* env, const DeviceAttributes& attributes, int device_id,
+             ::stream_executor::StreamExecutor* executor); // <--- 新增这个参数
   ~MusaDevice() override;
 
   const GpuDeviceInfo* tensorflow_gpu_device_info() const override { return &gpu_device_info_; }
