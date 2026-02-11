@@ -5,7 +5,7 @@
 #include <mudnn.h>
 #include <mublas.h>
 #include <musa_runtime.h>
-#include <memory>  // 【关键：引入智能指针】
+#include <memory>
 #include "tensorflow/core/framework/device.h"
 #include "tensorflow/core/framework/device_base.h"
 #include "tensorflow/stream_executor/stream.h"
@@ -17,7 +17,7 @@ namespace musa {
 
 class MusaDeviceContext : public DeviceContext {
  public:
-  explicit MusaDeviceContext(musaStream_t stream);
+  explicit MusaDeviceContext(musaStream_t stream, ::stream_executor::StreamExecutor* executor);
   ~MusaDeviceContext() override;
 
   ::stream_executor::Stream* stream() const override { return official_stream_; }
@@ -38,7 +38,8 @@ class MusaDeviceContext : public DeviceContext {
 
 class MusaDevice : public Device {
  public:
-  MusaDevice(Env* env, const DeviceAttributes& attributes, int device_id);
+  MusaDevice(Env* env, const DeviceAttributes& attributes, int device_id,
+             ::stream_executor::StreamExecutor* executor); 
   ~MusaDevice() override;
 
   const GpuDeviceInfo* tensorflow_gpu_device_info() const override { return &gpu_device_info_; }
@@ -49,7 +50,7 @@ class MusaDevice : public Device {
   musaStream_t GetStream() const { return stream_; }
   int get_device_id() const { return device_id_; }
 
-  // 【关键修复：解引用返回句柄】
+  // 解引用返回句柄
   ::musa::dnn::Handle& mudnn_handle() { return *mudnn_handle_; }
   mublasHandle_t mublas_handle() { return mublas_handle_; }
 
@@ -65,7 +66,7 @@ class MusaDevice : public Device {
   Allocator* musa_allocator_;
   GpuDeviceInfo gpu_device_info_;
 
-  // 【关键修复：改为智能指针以延迟初始化】
+  // 使用智能指针以延迟初始化
   std::unique_ptr<::musa::dnn::Handle> mudnn_handle_;
   mublasHandle_t mublas_handle_;
 };

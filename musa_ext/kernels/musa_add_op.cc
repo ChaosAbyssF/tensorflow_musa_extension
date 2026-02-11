@@ -67,8 +67,11 @@ class MusaAddOp : public MusaOpKernel {
 REGISTER_MUSA_ADD(float);
 REGISTER_MUSA_ADD(int32);
 REGISTER_MUSA_ADD(int64);
-REGISTER_MUSA_ADD(Eigen::half); // [新增] FP16 支持
-REGISTER_MUSA_ADD(bfloat16);    // [新增] BF16 支持
+REGISTER_MUSA_ADD(Eigen::half);
+REGISTER_MUSA_ADD(bfloat16);
+REGISTER_MUSA_ADD(double);
+REGISTER_MUSA_ADD(uint8);
+REGISTER_MUSA_ADD(bool);
 
 } // namespace musa
 } // namespace tensorflow

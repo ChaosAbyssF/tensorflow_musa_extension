@@ -53,10 +53,6 @@ public:
     }
 
     void Compute(OpKernelContext* ctx) override {
-       // fprintf(stderr, ">>> [MUSA_TRACE_AUTO] %s\n", name().c_str());
-#if ENABLE_MUSA_DEBUG
-      //  fprintf(stderr, "\n>>>> [FUSED_TRACE] Start Compute. Fusion=%s\n", fusion_name_.c_str());
-#endif
         const Tensor& in0 = ctx->input(0);
         const Tensor& in1 = ctx->input(1);
 
@@ -82,10 +78,6 @@ public:
         out_shape.AddDim(m);
         out_shape.AddDim(n);
 
-#if ENABLE_MUSA_DEBUG
-     //   fprintf(stderr, ">>>> [FUSED_TRACE] Output Shape: %s\n", out_shape.DebugString().c_str());
-#endif
-
         OP_REQUIRES(ctx, ctx->num_inputs() >= 3, errors::InvalidArgument("FusedMatMul requires Bias input"));
         const Tensor& bias = ctx->input(2);
         OP_REQUIRES(ctx, bias.dims() == 1, errors::InvalidArgument("Bias must be 1D"));
@@ -107,27 +99,48 @@ public:
             mTensor mt1 = CreateMTensor(in1, format_);
             mTensor mt_out = CreateMTensor(*out, format_);
 
-            auto FixToBatchFormat = [](mTensor& mt, const Tensor& t, const char* name) {
+            // [关键修复] 创建一个持久化容器，确保 Shape 数据在 Run() 执行前一直存活
+            std::vector<std::vector<int64_t>> shape_storage;
+            // 预留足够的空间防止 vector 扩容导致指针失效 (最多存3个张量的dim和stride，共6个)
+            shape_storage.reserve(6); 
+
+            // 修改 Lambda，让它把数据存到外部的 shape_storage 里
+            auto FixToBatchFormat = [&](mTensor& mt, const Tensor& t) {
                 if (t.dims() == 2) {
                     int64_t rows = t.dim_size(0);
                     int64_t cols = t.dim_size(1);
-#if ENABLE_MUSA_DEBUG
-                    fprintf(stderr, ">>>> [FUSED_TRACE] Fixing %s 2D->3D: [1, %lld, %lld]\n", name, (long long)rows, (long long)cols);
-#endif
-                    mt.SetNdInfo({(int64_t)1, (int64_t)rows, (int64_t)cols},
-                                 {(int64_t)(rows * cols), (int64_t)cols, (int64_t)1});
+                    
+                    // 1. 创建 shape 和 stride 向量
+                    std::vector<int64_t> dims = {1, rows, cols};
+                    std::vector<int64_t> strides = {rows * cols, cols, 1};
+                    
+                    // 2. 存入持久化容器
+                    shape_storage.push_back(dims);
+                    shape_storage.push_back(strides);
+                    
+                    // 3. 获取持久化内存的指针
+                    int64_t* p_dims = shape_storage[shape_storage.size()-2].data();
+                    int64_t* p_strides = shape_storage[shape_storage.size()-1].data();
+                    
+                    // 4. 安全地传递给 mTensor (假设 SetNdInfo 接受指针和长度)
+                    // 注意：这里需要适配你的 SetNdInfo 接口，如果是 initializer_list 版本，
+                    // 它通常会拷贝数据，但如果是指针版本则必须这样做。
+                    // 鉴于之前 Pack Op 的经验，这样做最安全。
+                    mt.SetNdInfo(3, p_dims, p_strides);
                 }
             };
 
-            FixToBatchFormat(mt0, in0, "A");
-            FixToBatchFormat(mt1, in1, "B");
-            FixToBatchFormat(mt_out, *out, "Out");
+            FixToBatchFormat(mt0, in0);
+            FixToBatchFormat(mt1, in1);
+            FixToBatchFormat(mt_out, *out);
 
+            // 此时 shape_storage 依然存活，指针有效
             auto status = matmul_op.Run(handle, mt_out, mt0, mt1);
             OP_REQUIRES(ctx, status == ::musa::dnn::Status::SUCCESS,
                         errors::Internal("MatMul failed. Status: ", (int)status));
         }
 
+        // BiasAdd 部分
         {
             mBinary binary_op;
             binary_op.SetMode(::musa::dnn::Binary::Mode::ADD);
@@ -140,24 +153,17 @@ public:
                         errors::Internal("BiasAdd failed. Status: ", (int)status));
         }
 
+        // Relu 部分
         if (fusion_type_ == FusionType::BIAS_ADD_RELU) {
-#if ENABLE_MUSA_DEBUG
-            fprintf(stderr, ">>>> [FUSED_TRACE] Step 3: Relu Running (via mUnary)...\n");
-#endif
             mTensor mt_out = CreateMTensor(*out, format_);
 
             mUnary unary_op;
             unary_op.SetMode(::musa::dnn::Unary::Mode::RELU);
 
             auto status = unary_op.Run(handle, mt_out, mt_out);
-
             OP_REQUIRES(ctx, status == ::musa::dnn::Status::SUCCESS,
                         errors::Internal("Fused ReLU failed. Status: ", (int)status));
         }
-
-#if ENABLE_MUSA_DEBUG
-      //  fprintf(stderr, ">>>> [FUSED_TRACE] Compute Finished Successfully.\n");
-#endif
     }
 
 private:
@@ -170,8 +176,8 @@ private:
 
 #define REGISTER_MUSA_FUSED_MATMUL(TYPE)                                      \
     REGISTER_KERNEL_BUILDER(Name("MusaFusedMatMul")                             \
-                            .Device("MUSA")                                 \
-                            .TypeConstraint<TYPE>("T"),                     \
+                            .Device("MUSA")                                     \
+                            .TypeConstraint<TYPE>("T"),                         \
                             MusaFusedMatMulOp<TYPE>);
 
 REGISTER_MUSA_FUSED_MATMUL(float);

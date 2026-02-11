@@ -28,6 +28,10 @@ class MusaCastOp : public MusaOpKernel {
     auto in_mt = CreateMTensor(inp);
     auto out_mt = CreateMTensor(*output);
 
+if (inp.dtype() == DT_BOOL) {
+        in_mt.SetFormat(mFormat::NCHW); 
+    }
+
     mHandle& h = GetHandleByCtx(ctx);
     ::musa::dnn::Unary op;
 

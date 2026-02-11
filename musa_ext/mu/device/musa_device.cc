@@ -7,6 +7,8 @@
 #include "tensorflow/core/framework/device_base.h"
 #include <iostream>
 
+#include "tensorflow/stream_executor/multi_platform_manager.h"
+
 namespace tensorflow {
 namespace musa {
 
@@ -14,9 +16,16 @@ namespace musa {
 // MusaDeviceContext 实现
 // ============================================================
 
-MusaDeviceContext::MusaDeviceContext(musaStream_t stream) : stream_handle_(stream) {
+MusaDeviceContext::MusaDeviceContext(musaStream_t stream, ::stream_executor::StreamExecutor* executor) 
+    : stream_handle_(stream) {
+    
     implementation_ = new ::stream_executor::musa::MusaStream(stream);
-    official_stream_ = new ::stream_executor::Stream(nullptr, implementation_);
+    
+    // 传入 executor 
+    official_stream_ = new ::stream_executor::Stream(executor, implementation_);
+    
+    // 初始化 Stream
+    official_stream_->Init(); 
 }
 
 MusaDeviceContext::~MusaDeviceContext() {
@@ -29,7 +38,6 @@ void MusaDeviceContext::CopyCPUTensorToDevice(const Tensor* cpu_tensor, Device* 
                                               Tensor* device_tensor, StatusCallback done,
                                               bool sync_dst_compute) const {
     auto* musa_dev = static_cast<MusaDevice*>(device);
-    // 强制切换设备上下文
     musaSetDevice(musa_dev->get_device_id());
 
     const void* src = cpu_tensor->tensor_data().data();
@@ -61,9 +69,9 @@ void MusaDeviceContext::CopyDeviceTensorToCPU(const Tensor* device_tensor,
     }
 
     if (bytes > 0) {
-        // 使用同步拷贝确保数据正确
+        // 使用同步拷贝
         mStatus m_stat = MusaMemcpyD2H(dst, src, bytes);
-        musaDeviceSynchronize();
+        musaDeviceSynchronize(); // 确保拷贝完成
 
         if (m_stat != mStatus::SUCCESS) {
             done(errors::Internal("MUSA D2H copy failed."));
@@ -77,21 +85,19 @@ void MusaDeviceContext::CopyDeviceTensorToCPU(const Tensor* device_tensor,
 // MusaDevice 实现
 // ============================================================
 
-MusaDevice::MusaDevice(Env* env, const DeviceAttributes& attributes, int device_id)
+// 参数跟头文件保持一致
+MusaDevice::MusaDevice(Env* env, const DeviceAttributes& attributes, int device_id, 
+                       ::stream_executor::StreamExecutor* executor)
     : Device(env, attributes), device_id_(device_id) {
 
-    // --- 【核心修复步骤 1：先切卡】 ---
-    // 必须在构造函数体第一时间切换到目标物理 ID
+    // 切卡
     musaSetDevice(device_id_);
 
-    // 创建该设备专用的流
+    // 创建流
     musaStreamCreate(&stream_);
 
-    // --- 【核心修复步骤 2：延迟创建句柄】 ---
-    // 此时 mudnn_handle_ 已经在头文件中改为 std::unique_ptr
-    // 在 SetDevice 之后创建，确保 Handle 内部记录的 Device Ordinal 正确
+    // 初始化 muDNN
     mudnn_handle_.reset(new ::musa::dnn::Handle());
-    
     ::musa::dnn::Status s = mudnn_handle_->SetStream(stream_);
     if (s != ::musa::dnn::Status::SUCCESS) {
         std::cerr << ">>> [MUSA] ERROR: Device " << device_id_ << " failed to bind muDNN handle!" << std::endl;
@@ -101,8 +107,9 @@ MusaDevice::MusaDevice(Env* env, const DeviceAttributes& attributes, int device_
     mublasCreate(&mublas_handle_);
     mublasSetStream(mublas_handle_, stream_);
 
-    // 初始化分配器和上下文
-    device_context_ = new MusaDeviceContext(stream_);
+    // 初始化 Context
+    // 直接使用参数里的 executor
+    device_context_ = new MusaDeviceContext(stream_, executor);
     musa_allocator_ = new MusaRawAllocator(device_id_);
 
     gpu_device_info_.stream = device_context_->stream();
@@ -125,7 +132,6 @@ MusaDevice::~MusaDevice() {
     if (musa_allocator_) {
         delete musa_allocator_;
     }
-    // mudnn_handle_ 会随 unique_ptr 自动销毁
     musaStreamDestroy(stream_);
 }
 
@@ -150,4 +156,3 @@ Status MusaDevice::TryGetDeviceContext(DeviceContext** out_context) {
 
 }  // namespace musa
 }  // namespace tensorflow
-

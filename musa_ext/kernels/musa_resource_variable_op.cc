@@ -1,229 +1,160 @@
 /* Copyright @2020-2026 Moore Threads Technology Co., Ltd. All rights reserved. */
 
-#include <iostream>
 #include "utils_op.h"
-#include "mu/device/musa_memcpy.h"
-#include "mu/device/musa_device.h"
-
 #include "tensorflow/core/framework/op_kernel.h"
-#include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/framework/resource_var.h"
+#include "tensorflow/core/framework/register_types.h"
 
 namespace tensorflow {
 namespace musa {
 
 using Var = ::tensorflow::Var;
 
-namespace {
-
-/**
- * 1. MusaVarHandleOp (代理类)
- */
+// 1. MusaVarHandleOp - 创建变量句柄
 class MusaVarHandleOp : public OpKernel {
  public:
-  explicit MusaVarHandleOp(OpKernelConstruction* c) : OpKernel(c) {
-    OP_REQUIRES_OK(c, c->GetAttr("container", &container_));
-    OP_REQUIRES_OK(c, c->GetAttr("shared_name", &shared_name_));
+  explicit MusaVarHandleOp(OpKernelConstruction* ctx) : OpKernel(ctx) {
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("container", &container_));
+    OP_REQUIRES_OK(ctx, ctx->GetAttr("shared_name", &shared_name_));
   }
-  void Compute(OpKernelContext* context) override {
-    std::cerr << ">>> [MUSA_DEBUG] Step 1: VarHandleOp" << std::endl;
-    Tensor* handle;
-    OP_REQUIRES_OK(context, context->allocate_output(0, TensorShape({}), &handle));
-    ResourceHandle r = MakeResourceHandle<Var>(context, container_, shared_name_);
-    handle->flat<ResourceHandle>()(0) = r;
+  void Compute(OpKernelContext* ctx) override {
+    Tensor* out;
+    OP_REQUIRES_OK(ctx, ctx->allocate_output(0, TensorShape({}), &out));
+    ResourceHandle handle = MakeResourceHandle<Var>(ctx, container_, shared_name_);
+    out->flat<ResourceHandle>()(0) = handle;
   }
  private:
-  string container_, shared_name_;
+  string container_;
+  string shared_name_;
 };
 
-/**
- * 2. MusaAssignVariableOp
- */
+// 2. MusaAssignVariableOp - 变量赋值
 template <typename T>
-class MusaAssignVariableOp : public MusaOpKernel {
+class MusaAssignVariableOp : public OpKernel {
  public:
-  using MusaOpKernel::MusaOpKernel;
-  void Compute(OpKernelContext* context) override {
-    std::cerr << ">>> [MUSA_DEBUG] Step 2: AssignVariable" << std::endl;
-    const Tensor& value = context->input(1);
-    core::RefCountPtr<Var> variable;
-    OP_REQUIRES_OK(context, LookupOrCreateResource<Var>(
-        context, HandleFromInput(context, 0), &variable,
-        [this, &value](Var** ptr) {
-          *ptr = new Var(value.dtype());
-          *(*ptr)->tensor() = value;
-          (*ptr)->is_initialized = true;
-          return Status::OK();
-        }));
-    mutex_lock ml(*variable->mu());
-    *variable->tensor() = value;
-    variable->is_initialized = true;
-  }
-};
-
-/**
- * 3. MusaReadVariableOp
- */
-template <typename T>
-class MusaReadVariableOp : public MusaOpKernel {
- public:
-  using MusaOpKernel::MusaOpKernel;
-  void Compute(OpKernelContext* context) override {
-    std::cerr << ">>> [MUSA_DEBUG] Step 3: ReadVariable" << std::endl;
-    core::RefCountPtr<Var> variable;
-    OP_REQUIRES_OK(context, LookupResource(context, HandleFromInput(context, 0), &variable));
-    tf_shared_lock ml(*variable->mu());
-    context->set_output(0, *variable->tensor());
-  }
-};
-
-/**
- * 4. MusaAssignUpdateVariableOp (Add/Sub)
- */
-template <typename T, mBinary::Mode BMODE>
-class MusaAssignUpdateVariableOp : public MusaOpKernel {
- public:
-  using MusaOpKernel::MusaOpKernel;
-  void Compute(OpKernelContext* context) override {
-    std::cerr << ">>> [MUSA_DEBUG] Step 4: AssignUpdate" << std::endl;
-    core::RefCountPtr<Var> variable;
-    OP_REQUIRES_OK(context, LookupResource(context, HandleFromInput(context, 0), &variable));
-    const Tensor& value = context->input(1);
-    mutex_lock ml(*variable->mu());
-    Tensor* var_tensor = variable->tensor();
+  explicit MusaAssignVariableOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}
+  void Compute(OpKernelContext* ctx) override {
+    const Tensor& value = ctx->input(1);
     
-    if (!var_tensor->RefCountIsOne()) {
-        Tensor tmp;
-        AllocatorAttributes attr;
-        attr.set_gpu_compatible(true);
-        OP_REQUIRES_OK(context, context->allocate_temp(var_tensor->dtype(), var_tensor->shape(), &tmp, attr));
-        MusaMemcpyD2D(tmp.data(), var_tensor->data(), var_tensor->TotalBytes());
-        *var_tensor = tmp;
+    // 如果运行时请求了输出（如初始化链），转发 Resource Handle
+    if (ctx->num_outputs() > 0) {
+      ctx->set_output(0, ctx->input(0)); 
     }
 
-    auto in = CreateMTensor(value, format_);
-    auto out = CreateMTensor(*var_tensor, format_);
-    auto& h = GetHandleByCtx(context);
-    mBinary op;
-    op.SetMode(BMODE);
-    MTOP_CHECK_OK_RUN(op.Run(h, out, out, in), "RunBinaryUpdate", context);
+    core::RefCountPtr<Var> var;
+    OP_REQUIRES_OK(ctx, LookupOrCreateResource<Var>(ctx, HandleFromInput(ctx, 0), &var,
+      [&](Var** ptr) { 
+        *ptr = new Var(value.dtype()); 
+        return Status::OK(); 
+      }));
+
+    mutex_lock lock(*var->mu());
+    *var->tensor() = value; // 浅拷贝引用
+    var->is_initialized = true;
   }
 };
 
-/**
- * 5. ResourceGatherOp (Embedding Lookup)
- */
-template <typename T, typename Index>
-class MusaResourceGatherOp : public MusaOpKernel {
+
+
+// 3. MusaReadVariableOp - 强制日志调试版
+class MusaReadVariableOp : public OpKernel {
  public:
-  explicit MusaResourceGatherOp(OpKernelConstruction* c) : MusaOpKernel(c) {
-    OP_REQUIRES_OK(c, c->GetAttr("batch_dims", &batch_dims_));
+  explicit MusaReadVariableOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}
+
+  void Compute(OpKernelContext* ctx) override {
+    // 【埋点 1】确认进入 Compute
+    std::cerr << ">>>>> [MUSA_READ_LOG] 1. Enter Compute for Node: " << ctx->op_kernel().name() << std::endl;
+
+    core::RefCountPtr<Var> var;
+    // 1. 获取 Handle
+    const Tensor& handle_tensor = ctx->input(0);
+    const ResourceHandle& handle = handle_tensor.flat<ResourceHandle>()(0);
+    
+    // 【埋点 2】确认 Handle 信息
+    std::cerr << ">>>>> [MUSA_READ_LOG] 2. Handle Name: " << handle.name() << ", Device: " << handle.device() << std::endl;
+
+    // 2. 查找资源
+    Status s = LookupResource(ctx, handle, &var);
+    if (!s.ok()) {
+      std::cerr << ">>>>> [MUSA_READ_LOG] ❌ 3. LookupResource FAILED: " << s.ToString() << std::endl;
+      ctx->CtxFailure(s);
+      return;
+    }
+
+    tf_shared_lock lock(*var->mu());
+    
+    // 3. 检查初始化
+    if (!var->is_initialized) {
+      std::cerr << ">>>>> [MUSA_READ_LOG] ❌ 4. Variable NOT Initialized!" << std::endl;
+      ctx->CtxFailure(errors::FailedPrecondition("Variable not initialized."));
+      return;
+    }
+
+    // 【埋点 3】确认 Tensor 状态
+    const Tensor& t = *var->tensor();
+    std::cerr << ">>>>> [MUSA_READ_LOG] 5. Tensor Ready. DType: " << DataTypeString(t.dtype()) 
+              << ", Shape: " << t.shape().DebugString() << std::endl;
+
+    // 4. 【核心输出】
+    ctx->set_output(0, t);
+    
+    // 【埋点 4】确认成功结束
+    std::cerr << ">>>>> [MUSA_READ_LOG] 6. set_output(0) SUCCESS. Done." << std::endl;
   }
-  void Compute(OpKernelContext* c) override {
-    std::cerr << ">>> [MUSA_DEBUG] Step 6: ResourceGather" << std::endl;
-    core::RefCountPtr<Var> v;
-    OP_REQUIRES_OK(c, LookupResource(c, HandleFromInput(c, 0), &v));
-    tf_shared_lock ml(*v->mu());
-    const Tensor& params = *v->tensor();
-    const Tensor& indices = c->input(1);
+};
 
-    TensorShape res_shape;
-    for (int i = 0; i < indices.dims(); ++i) res_shape.AddDim(indices.dim_size(i));
-    for (int i = batch_dims_ + 1; i < params.dims(); ++i) res_shape.AddDim(params.dim_size(i));
+// 注册：保持通用，不带 T 约束
+// 注册 ReadVariableOp
+REGISTER_KERNEL_BUILDER(Name("ReadVariableOp").Device("MUSA").HostMemory("resource"), MusaReadVariableOp);
 
+// 🌟 增加这一行别名注册，很多版本的 Adam 实际上在找这个名字
+REGISTER_KERNEL_BUILDER(Name("ResourceReadVariableOp").Device("MUSA").HostMemory("resource"), MusaReadVariableOp);
+
+
+// 4. MusaVarIsInitializedOp - 检查变量是否已初始化
+class MusaVarIsInitializedOp : public OpKernel {
+ public:
+  explicit MusaVarIsInitializedOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}
+  void Compute(OpKernelContext* ctx) override {
     Tensor* out = nullptr;
-    OP_REQUIRES_OK(c, c->allocate_output(0, res_shape, &out));
-
-    if (indices.NumElements() > 0) {
-      auto out_mt = CreateMTensor(*out, format_);
-      auto params_mt = CreateMTensor(params, format_);
-      auto indices_mt = CreateMTensor(indices, format_);
-      auto& h = GetHandleByCtx(c);
-      mGatherX op;
-      op.SetMode(mGatherX::Mode::GATHER);
-      op.SetAxis(batch_dims_);
-      MTOP_CHECK_OK_RUN(op.Run(h, out_mt, indices_mt, params_mt), "RunGatherX", c);
-    }
-  }
- private:
-  int32 batch_dims_;
-};
-
-/**
- * 6. ResourceScatterAddOp (Gradient Update)
- */
-template <typename T, typename Index>
-class MusaResourceScatterAddOp : public MusaOpKernel {
- public:
-  using MusaOpKernel::MusaOpKernel;
-  void Compute(OpKernelContext* c) override {
-    std::cerr << ">>> [MUSA_DEBUG] Step 7: ResourceScatterAdd" << std::endl;
-    core::RefCountPtr<Var> v;
-    OP_REQUIRES_OK(c, LookupResource(c, HandleFromInput(c, 0), &v));
-    mutex_lock ml(*v->mu());
-    Tensor* params = v->tensor();
-    const Tensor& indices = c->input(1);
-    const Tensor& updates = c->input(2);
-
-    if (indices.NumElements() > 0) {
-      auto params_mt = CreateMTensor(*params, format_);
-      auto indices_mt = CreateMTensor(indices, format_);
-      auto updates_mt = CreateMTensor(updates, format_);
-      auto& h = GetHandleByCtx(c);
-      
-      auto* device = static_cast<MusaDevice*>(c->device());
-      auto maintainer = device->GetMemMaintainer([](size_t size) { return ::musa::dnn::MemoryHandler(); });
-
-      mScatter op;
-      op.SetMode(mScatter::Mode::ADD);
-      MTOP_CHECK_OK_RUN(op.Run(h, params_mt, indices_mt, updates_mt, 0, maintainer), "RunScatterAdd", c);
-    }
+    OP_REQUIRES_OK(ctx, ctx->allocate_output(0, TensorShape({}), &out));
+    core::RefCountPtr<Var> var;
+    bool is_init = LookupResource(ctx, HandleFromInput(ctx, 0), &var).ok() && var->is_initialized;
+    out->flat<bool>()(0) = is_init;
   }
 };
 
-/**
- * 7. MusaDestroyResourceOp
- */
+// 5. MusaDestroyResourceOp - 销毁资源
 class MusaDestroyResourceOp : public OpKernel {
  public:
-  explicit MusaDestroyResourceOp(OpKernelConstruction* c) : OpKernel(c) {}
-  void Compute(OpKernelContext* context) override {
-    std::cerr << ">>> [MUSA_DEBUG] Step 5: DestroyResource" << std::endl;
-    const ResourceHandle& handle = HandleFromInput(context, 0);
-    DeleteResource(context, handle);
+  explicit MusaDestroyResourceOp(OpKernelConstruction* ctx) : OpKernel(ctx) {}
+  void Compute(OpKernelContext* ctx) override {
+    DeleteResource(ctx, HandleFromInput(ctx, 0));
   }
 };
 
-} // namespace anonymous
+// --- 注册区 ---
 
-// --- 精简注册逻辑 ---
 
-// 全局唯一的算子注册
+#define REGISTER_MUSA_VAR_MANAGEMENT(T) \
+  REGISTER_KERNEL_BUILDER(Name("VarHandleOp").Device("MUSA").HostMemory("resource").TypeConstraint<T>("dtype"), MusaVarHandleOp); \
+  REGISTER_KERNEL_BUILDER(Name("AssignVariableOp").Device("MUSA").HostMemory("resource").TypeConstraint<T>("dtype"), MusaAssignVariableOp<T>); \
+  // REGISTER_KERNEL_BUILDER(Name("ReadVariableOp").Device("MUSA").HostMemory("resource").TypeConstraint<T>("dtype"), MusaReadVariableOp<T>);
+
+// 注册常用类型
+REGISTER_MUSA_VAR_MANAGEMENT(float);
+REGISTER_MUSA_VAR_MANAGEMENT(double); // 增加 double 支持
+REGISTER_MUSA_VAR_MANAGEMENT(Eigen::half);
+REGISTER_MUSA_VAR_MANAGEMENT(int32);
+REGISTER_MUSA_VAR_MANAGEMENT(int64);
+
+// 注册状态与销毁算子
+REGISTER_KERNEL_BUILDER(Name("VarIsInitializedOp").Device("MUSA").HostMemory("resource").HostMemory("is_initialized"), MusaVarIsInitializedOp);
 REGISTER_KERNEL_BUILDER(Name("DestroyResourceOp").Device("MUSA").HostMemory("resource"), MusaDestroyResourceOp);
-
-// 按数据类型注册所有相关算子
-#define REGISTER_MUSA_RESOURCE_KERNELS(type) \
-  REGISTER_KERNEL_BUILDER(Name("VarHandleOp").Device("MUSA").HostMemory("resource").TypeConstraint<type>("dtype"), MusaVarHandleOp); \
-  REGISTER_KERNEL_BUILDER(Name("AssignVariableOp").Device("MUSA").HostMemory("resource").TypeConstraint<type>("dtype"), MusaAssignVariableOp<type>); \
-  REGISTER_KERNEL_BUILDER(Name("ReadVariableOp").Device("MUSA").HostMemory("resource").TypeConstraint<type>("dtype"), MusaReadVariableOp<type>); \
-  REGISTER_KERNEL_BUILDER(Name("AssignAddVariableOp").Device("MUSA").HostMemory("resource").TypeConstraint<type>("dtype"), MusaAssignUpdateVariableOp<type, mBinary::Mode::ADD>); \
-  REGISTER_KERNEL_BUILDER(Name("AssignSubVariableOp").Device("MUSA").HostMemory("resource").TypeConstraint<type>("dtype"), MusaAssignUpdateVariableOp<type, mBinary::Mode::SUB>); \
-  REGISTER_KERNEL_BUILDER(Name("ResourceGather").Device("MUSA").HostMemory("resource").TypeConstraint<type>("dtype").TypeConstraint<int32>("Tindices"), MusaResourceGatherOp<type, int32>); \
-  REGISTER_KERNEL_BUILDER(Name("ResourceGather").Device("MUSA").HostMemory("resource").TypeConstraint<type>("dtype").TypeConstraint<int64>("Tindices"), MusaResourceGatherOp<type, int64>); \
-  REGISTER_KERNEL_BUILDER(Name("ResourceScatterAdd").Device("MUSA").HostMemory("resource").TypeConstraint<type>("dtype").TypeConstraint<int32>("Tindices"), MusaResourceScatterAddOp<type, int32>); \
-  REGISTER_KERNEL_BUILDER(Name("ResourceScatterAdd").Device("MUSA").HostMemory("resource").TypeConstraint<type>("dtype").TypeConstraint<int64>("Tindices"), MusaResourceScatterAddOp<type, int64>);
-
-// 为浮点类型注册完整算子
-REGISTER_MUSA_RESOURCE_KERNELS(float);
-REGISTER_MUSA_RESOURCE_KERNELS(Eigen::half);
-REGISTER_MUSA_RESOURCE_KERNELS(bfloat16);
-
-// 为 int32 注册基础变量操作（去掉了 Gather/Scatter）
-REGISTER_KERNEL_BUILDER(Name("VarHandleOp").Device("MUSA").HostMemory("resource").TypeConstraint<int32>("dtype"), MusaVarHandleOp);
-REGISTER_KERNEL_BUILDER(Name("AssignVariableOp").Device("MUSA").HostMemory("resource").TypeConstraint<int32>("dtype"), MusaAssignVariableOp<int32>);
-REGISTER_KERNEL_BUILDER(Name("ReadVariableOp").Device("MUSA").HostMemory("resource").TypeConstraint<int32>("dtype"), MusaReadVariableOp<int32>);
 
 } // namespace musa
 } // namespace tensorflow
+
+
 
