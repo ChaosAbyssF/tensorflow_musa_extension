@@ -10,7 +10,7 @@ class MusaNotEqualOp : public MusaOpKernel {
     void Compute(OpKernelContext* ctx){
         
     }
-}
+};
 
 }
 }
