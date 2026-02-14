@@ -1,23 +1,15 @@
 #include <musa_runtime.h>
+#include <musa_fp16.h>
 
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wignored-pragmas"
 
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/platform/types.h"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+// #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
 #include "tensorflow/stream_executor/stream.h"
-
-#if defined(__MUSACC__)
-#define __CUDACC__
-#define __MUSA_DEFINED_CUDACC__
-#endif
-#include "tensorflow/core/lib/random/philox_random.h"
-#include "tensorflow/core/lib/random/random_distributions.h"
-#if defined(__MUSA_DEFINED_CUDACC__)
-#undef __CUDACC__
-#undef __MUSA_DEFINED_CUDACC__
-#endif
+#include "../utils/musa_guarded_philox_random.h"
+#pragma GCC diagnostic pop
 
 namespace tensorflow {
 namespace musa {
@@ -75,11 +67,10 @@ void LaunchPhiloxTruncatedNormal(
 
 // 显式实例化
 template void LaunchPhiloxTruncatedNormal<float>(
-    musaStream_t, float*, uint64_t, const tensorflow::random::PhiloxRandom&);
-// template void LaunchPhiloxTruncatedNormal<double>(
-//     musaStream_t, double*, uint64_t, const tensorflow::random::PhiloxRandom&);
+  musaStream_t, float*, uint64_t, const tensorflow::random::PhiloxRandom&);
+template void LaunchPhiloxTruncatedNormal<double>(
+  musaStream_t, double*, uint64_t, const tensorflow::random::PhiloxRandom&);
 // template void LaunchPhiloxTruncatedNormal<Eigen::half>(
-//     musaStream_t, Eigen::half*, uint64_t, const tensorflow::random::PhiloxRandom&);
-
+//   musaStream_t, Eigen::half*, uint64_t, const tensorflow::random::PhiloxRandom&);
 }  // namespace musa
 }  // namespace tensorflow

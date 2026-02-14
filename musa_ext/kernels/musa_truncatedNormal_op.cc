@@ -2,10 +2,8 @@
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor_util.h"
 #include "tensorflow/core/framework/bfloat16.h"
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
-#include "tensorflow/core/util/guarded_philox_random.h"
-#include <random>
-#include <limits>
+// #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "../utils/musa_guarded_philox_random.h"
 
 #include "utils_op.h"
 #include "mu/device/musa_memcpy.h"
@@ -82,8 +80,8 @@ class MusaTruncatedNormalOp : public MusaOpKernel {
 // 批量注册支持的数据类型
 REGISTER_MUSA_TRUNCATED_NORMAL_KERNEL(float);
 REGISTER_MUSA_TRUNCATED_NORMAL_KERNEL(double);
-REGISTER_MUSA_TRUNCATED_NORMAL_KERNEL(Eigen::half);
-REGISTER_MUSA_TRUNCATED_NORMAL_KERNEL(Eigen::bfloat16);
+// REGISTER_MUSA_TRUNCATED_NORMAL_KERNEL(Eigen::half);
+// REGISTER_MUSA_TRUNCATED_NORMAL_KERNEL(Eigen::bfloat16);
 
 #undef REGISTER_MUSA_TRUNCATED_NORMAL_KERNEL
 
