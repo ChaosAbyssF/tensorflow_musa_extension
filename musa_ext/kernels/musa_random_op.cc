@@ -108,18 +108,6 @@ class MusaRandomOp : public MusaOpKernel {
                               .TypeConstraint<TYPE>("dtype"),                  \
                           MusaRandomOp<TYPE>);                                 \
                                                                                \
-  REGISTER_KERNEL_BUILDER(Name("RandomStandardNormal")                         \
-                              .Device("MUSA")                                  \
-                              .HostMemory("shape")                             \
-                              .TypeConstraint<TYPE>("dtype"),                  \
-                          MusaRandomOp<TYPE>);                                 \
-                                                                               \
-  REGISTER_KERNEL_BUILDER(Name("TruncatedNormal")                              \
-                              .Device("MUSA")                                  \
-                              .HostMemory("shape")                             \
-                              .TypeConstraint<TYPE>("dtype"),                  \
-                          MusaRandomOp<TYPE>);                                 \
-                                                                               \
   REGISTER_KERNEL_BUILDER(Name("StatelessRandomUniform")                       \
                               .Device("MUSA")                                  \
                               .HostMemory("shape")                             \
@@ -173,6 +161,18 @@ class MusaRandomOp : public MusaOpKernel {
                               .HostMemory("maxval")                            \
                               .TypeConstraint<TYPE>("dtype"),                  \
                           MusaRandomOp<TYPE>);
+  //                                                                              \
+  // REGISTER_KERNEL_BUILDER(Name("RandomStandardNormal")                         \
+  //                             .Device("MUSA")                                  \
+  //                             .HostMemory("shape")                             \
+  //                             .TypeConstraint<TYPE>("dtype"),                  \
+  //                         MusaRandomOp<TYPE>);                                 \
+  //                                                                              \
+  // REGISTER_KERNEL_BUILDER(Name("TruncatedNormal")                              \
+  //                             .Device("MUSA")                                  \
+  //                             .HostMemory("shape")                             \
+  //                             .TypeConstraint<TYPE>("dtype"),                  \
+  //                         MusaRandomOp<TYPE>);                                 \
 
 // 执行批量注册
 REGISTER_MUSA_RANDOM_KERNELS(float);

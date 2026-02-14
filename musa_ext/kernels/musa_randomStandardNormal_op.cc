@@ -12,7 +12,7 @@ namespace tensorflow {
 namespace musa {
 
 template <typename T>
-void LaunchPhiloxNormal(musaStream_t, T*, uint64_t, const random::PhiloxRandom&);
+void LaunchPhiloxRandomNormal(musaStream_t, T*, uint64_t, const random::PhiloxRandom&);
 
 template <typename T>
 class MusaRandomStandardNormalOp : public MusaOpKernel {
@@ -54,7 +54,7 @@ class MusaRandomStandardNormalOp : public MusaOpKernel {
       musaStream_t stream = reinterpret_cast<musaStream_t>(handle.GetStream());
 
       // 根据 dtype 分发到具体实现
-      LaunchPhiloxNormal<T>(
+      LaunchPhiloxRandomNormal<T>(
         stream, 
         output->flat<T>().data(), 
         output->NumElements(), 
