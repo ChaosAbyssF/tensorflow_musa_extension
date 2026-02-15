@@ -40,15 +40,16 @@ __device__ __forceinline__ void StoreFloat(bfloat16* p, double v) {
 // ---------------------- Universal Normal Kernel ----------------------
 template <typename T, typename DIST_TYPE, int kBlockSize = 256>
 __global__ void __launch_bounds__(kBlockSize)
-    PhiloxNormalKernel(const uint64_t num_elements, const PhiloxRandom base_gen,
-                       DIST_TYPE dist, T* __restrict__ data) {
+    PhiloxNormalKernel(const uint64_t num_elements,
+                       const random::PhiloxRandom base_gen, DIST_TYPE dist,
+                       T* __restrict__ data) {
   constexpr int kGroupSize = DIST_TYPE::kResultElementCount;
   const uint64_t thread_id = blockIdx.x * blockDim.x + threadIdx.x;
   const uint64_t thread_count = gridDim.x * blockDim.x;
   uint64_t group_index = thread_id;
 
   while (group_index * kGroupSize < num_elements) {
-    PhiloxRandom gen = base_gen;
+    random::PhiloxRandom gen = base_gen;
     gen.Skip(group_index);
 
     auto samples = dist(&gen);
@@ -63,63 +64,47 @@ __global__ void __launch_bounds__(kBlockSize)
   }
 }
 
-// --------------------- Random Normal Kernels ---------------------
-template <typename T>
+template <typename T, typename DIST_TYPE>
 void LaunchPhiloxNormalKernel(musaStream_t stream, T* data,
-                              uint64_t num_elements, const PhiloxRandom& philox,
-                              const NormalDistribution<PhiloxRandom>& dist) {
+                              uint64_t num_elements,
+                              const random::PhiloxRandom& philox,
+                              const DIST_TYPE& dist) {
   constexpr int kBlockSize = 256;
-  constexpr int kGroupSize =
-      NormalDistribution<PhiloxRandom>::kResultElementCount;
+  constexpr int kGroupSize = DIST_TYPE::kResultElementCount;
   const uint64_t num_groups = (num_elements + kGroupSize - 1) / kGroupSize;
   const int num_blocks = (num_groups + kBlockSize - 1) / kBlockSize;
 
-  PhiloxNormalKernel<T, NormalDistribution<PhiloxRandom>>
+  PhiloxNormalKernel<T, DIST_TYPE>
       <<<num_blocks, kBlockSize, 0, stream>>>(num_elements, philox, dist, data);
 }
 
-// 显式实例化
+// --------------------- Random Normal Kernels ---------------------
 template void LaunchPhiloxNormalKernel<float>(
-    musaStream_t, float*, uint64_t, const PhiloxRandom&,
-    const NormalDistribution<PhiloxRandom>&);
+    musaStream_t, float*, uint64_t, const random::PhiloxRandom&,
+    const random::NormalDistribution<random::PhiloxRandom>&);
 template void LaunchPhiloxNormalKernel<double>(
-    musaStream_t, double*, uint64_t, const PhiloxRandom&,
-    const NormalDistribution<PhiloxRandom>&);
+    musaStream_t, double*, uint64_t, const random::PhiloxRandom&,
+    const random::NormalDistribution<random::PhiloxRandom>&);
 template void LaunchPhiloxNormalKernel<Eigen::half>(
-    musaStream_t, Eigen::half*, uint64_t, const PhiloxRandom&,
-    const NormalDistribution<PhiloxRandom>&);
+    musaStream_t, Eigen::half*, uint64_t, const random::PhiloxRandom&,
+    const random::NormalDistribution<random::PhiloxRandom>&);
 template void LaunchPhiloxNormalKernel<Eigen::bfloat16>(
-    musaStream_t, Eigen::bfloat16*, uint64_t, const PhiloxRandom&,
-    const NormalDistribution<PhiloxRandom>&);
+    musaStream_t, Eigen::bfloat16*, uint64_t, const random::PhiloxRandom&,
+    const random::NormalDistribution<random::PhiloxRandom>&);
 
 // --------------------- Truncated Normal Kernels ---------------------
-template <typename T>
-void LaunchPhiloxNormalKernel(
-    musaStream_t stream, T* data, uint64_t num_elements,
-    const PhiloxRandom& philox,
-    const TruncatedNormalDistribution<PhiloxRandom>& dist) {
-  constexpr int kBlockSize = 256;
-  constexpr int kGroupSize =
-      TruncatedNormalDistribution<PhiloxRandom>::kResultElementCount;
-  const uint64_t num_groups = (num_elements + kGroupSize - 1) / kGroupSize;
-  const int num_blocks = (num_groups + kBlockSize - 1) / kBlockSize;
-
-  PhiloxNormalKernel<T, TruncatedNormalDistribution<PhiloxRandom>>
-      <<<num_blocks, kBlockSize, 0, stream>>>(num_elements, philox, dist, data);
-}
-
 template void LaunchPhiloxNormalKernel<float>(
-    musaStream_t, float*, uint64_t, const PhiloxRandom&,
-    const TruncatedNormalDistribution<PhiloxRandom>&);
+    musaStream_t, float*, uint64_t, const random::PhiloxRandom&,
+    const random::TruncatedNormalDistribution<random::PhiloxRandom>&);
 template void LaunchPhiloxNormalKernel<double>(
-    musaStream_t, double*, uint64_t, const PhiloxRandom&,
-    const TruncatedNormalDistribution<PhiloxRandom>&);
+    musaStream_t, double*, uint64_t, const random::PhiloxRandom&,
+    const random::TruncatedNormalDistribution<random::PhiloxRandom>&);
 template void LaunchPhiloxNormalKernel<Eigen::half>(
-    musaStream_t, Eigen::half*, uint64_t, const PhiloxRandom&,
-    const TruncatedNormalDistribution<PhiloxRandom>&);
+    musaStream_t, Eigen::half*, uint64_t, const random::PhiloxRandom&,
+    const random::TruncatedNormalDistribution<random::PhiloxRandom>&);
 template void LaunchPhiloxNormalKernel<Eigen::bfloat16>(
-    musaStream_t, Eigen::bfloat16*, uint64_t, const PhiloxRandom&,
-    const TruncatedNormalDistribution<PhiloxRandom>&);
+    musaStream_t, Eigen::bfloat16*, uint64_t, const random::PhiloxRandom&,
+    const random::TruncatedNormalDistribution<random::PhiloxRandom>&);
 
 }  // namespace musa
 }  // namespace tensorflow

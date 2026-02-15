@@ -13,7 +13,7 @@ namespace tensorflow {
 namespace musa {
 
 template <typename T, typename DIST_TYPE>
-void LaunchPhiloxNormalKernel(musaStream_t stream, T* output_ptr,
+void LaunchPhiloxNormalKernel(musaStream_t stream, T* data,
                               uint64_t num_elements,
                               const random::PhiloxRandom& philox,
                               const DIST_TYPE& dist);
@@ -58,15 +58,17 @@ class MusaNormalOp : public MusaOpKernel {
       auto philox = generator.ReserveSamples32(samples_needed);
       NormalDist dist;  // Stack object, no heap allocation
       LaunchPhiloxNormalKernel<T, NormalDist>(stream, output->flat<T>().data(),
-                                               output->NumElements(), philox, dist);
+                                              output->NumElements(), philox,
+                                              dist);
     } else if (activated_mode == "TruncatedNormal") {
       // TruncatedNormal uses rejection sampling, need ~4x oversampling
       // For N outputs, reserve 4N elements worth of samples
       uint64_t samples_needed = total_elements * 4;
       auto philox = generator.ReserveSamples32(samples_needed);
       TruncatedDist dist;  // Stack object, no heap allocation
-      LaunchPhiloxNormalKernel<T, TruncatedDist>(stream, output->flat<T>().data(),
-                                                   output->NumElements(), philox, dist);
+      LaunchPhiloxNormalKernel<T, TruncatedDist>(
+          stream, output->flat<T>().data(), output->NumElements(), philox,
+          dist);
     } else {
       OP_REQUIRES(ctx, false,
                   errors::InvalidArgument("Unsupported op name: ", name()));
@@ -78,12 +80,12 @@ class MusaNormalOp : public MusaOpKernel {
   tensorflow::int64 seed2_;
 };
 
-#define REGISTER_MUSA_NORMAL_KERNEL(TYPE)     \
+#define REGISTER_MUSA_NORMAL_KERNEL(TYPE)                     \
   REGISTER_KERNEL_BUILDER(Name("RandomStandardNormal")        \
                               .Device("MUSA")                 \
                               .HostMemory("shape")            \
                               .TypeConstraint<TYPE>("dtype"), \
-                          MusaNormalOp<TYPE>);  \
+                          MusaNormalOp<TYPE>);                \
   REGISTER_KERNEL_BUILDER(Name("TruncatedNormal")             \
                               .Device("MUSA")                 \
                               .HostMemory("shape")            \
