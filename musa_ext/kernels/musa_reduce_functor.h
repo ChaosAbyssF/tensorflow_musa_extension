@@ -57,15 +57,14 @@ Status ReduceFunctor::Compute<bfloat16>(OpKernelContext* ctx,
                                         int reduce_dim_count,
                                         const char* error_prefix) {
   mTensor input_fp32;
-  TF_RETURN_IF_ERROR(CastTensor(ctx, *input_mt, DT_FLOAT, &input_fp32));
+  TF_RETURN_IF_ERROR(CastFunctor(ctx, *input_mt, &input_fp32));
 
   mTensor output_fp32;
   TF_RETURN_IF_ERROR(Compute<float>(ctx, &output_fp32, &input_fp32, mode,
                                     reduce_dims, reduce_dim_count,
                                     error_prefix));
 
-  return CastTensor(ctx, output_fp32, DataTypeToEnum<bfloat16>::value,
-                    output_mt);
+  return CastFunctor(ctx, output_fp32, output_mt);
 }
 
 }  // namespace musa

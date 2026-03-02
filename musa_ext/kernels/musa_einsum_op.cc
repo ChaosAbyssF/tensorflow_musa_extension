@@ -194,18 +194,7 @@ struct EinsumHelper {
     auto input_mt = CreateMTensor(input);
     auto output_mt = CreateMTensor(*output);
 
-    ::musa::dnn::Unary op;
-    auto status = op.SetMode(::musa::dnn::Unary::Mode::CAST);
-    if (status != ::musa::dnn::Status::SUCCESS) {
-      return errors::Internal("Einsum CastTensor SetMode failed. Status: ",
-                              static_cast<int>(status));
-    }
-    status = op.Run(GetHandleByCtx(ctx), output_mt, input_mt);
-    if (status != ::musa::dnn::Status::SUCCESS) {
-      return errors::Internal("Einsum CastTensor Run failed. Status: ",
-                              static_cast<int>(status));
-    }
-    return Status::OK();
+    return CastFunctor(ctx, input_mt, &output_mt);
   }
 
   // Transpose the input given a permutation. Returns a reference to the input
