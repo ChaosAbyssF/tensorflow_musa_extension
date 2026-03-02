@@ -808,6 +808,9 @@ class MusaEinsumOp : public MusaOpKernel {
     return profiler::TraceMeEncode(std::move(op), {{"equation", equation}});
   }
 
+  // einsum contains bmm
+  bool IsExpensive() override { return true; }
+
  private:
   string equation_;
   OperandLabels input_labels_;
