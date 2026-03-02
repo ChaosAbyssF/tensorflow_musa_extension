@@ -1,5 +1,3 @@
-#include "musa_einsum_op.h"
-
 #include <memory>
 #include <vector>
 
