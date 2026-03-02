@@ -19,26 +19,26 @@ namespace tensorflow {
 namespace musa {
 
 template <typename T>
-Status MusaFillCall(mTensor* out_mt, T value, OpKernelContext* context) {
+inline Status MusaFillCall(mTensor* out_mt, T value, OpKernelContext* context) {
   mFill op;
   mHandle& h = GetHandleByCtx(context);
 
   if (std::is_integral<T>::value) {
     if (mStatus::SUCCESS != op.SetValue(static_cast<int64_t>(value))) {
-      return errors::Internal("mtdnn set value (int) error!");
+      return errors::Internal("mudnn set value (int) error!");
     }
   } else if (std::is_floating_point<T>::value ||
              std::is_same<T, Eigen::half>::value ||
              std::is_same<T, Eigen::bfloat16>::value) {
     if (mStatus::SUCCESS != op.SetValue(static_cast<double>(value))) {
-      return errors::Internal("mtdnn set value (float) error!");
+      return errors::Internal("mudnn set value (float) error!");
     }
   } else {
     return errors::Unimplemented("Data type not supported in MTGPU Fill.");
   }
 
   if (mStatus::SUCCESS != op.Run(h, *out_mt)) {
-    return errors::Internal("mtdnn run op error!");
+    return errors::Internal("mudnn run op error!");
   }
 
   return Status::OK();

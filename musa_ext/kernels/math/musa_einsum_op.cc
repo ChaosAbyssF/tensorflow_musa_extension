@@ -3,13 +3,13 @@
 #include <memory>
 #include <vector>
 
-#include "../mu/device/musa_device.h"
-#include "../utils/musa_einsum_op_util.h"
+#include "../array/musa_fill_functor.h"
+#include "../array/musa_transpose_functor.h"
+#include "../utils_op.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/strings/str_split.h"
-#include "musa_fill_functor.h"
+#include "device/musa_device.h"
 #include "musa_reduce_functor.h"
-#include "musa_transpose_functor.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/gtl/array_slice.h"
@@ -18,7 +18,7 @@
 #include "tensorflow/core/platform/types.h"
 #include "tensorflow/core/profiler/lib/traceme.h"
 #include "tensorflow/core/util/matmul_bcast.h"
-#include "utils_op.h"
+#include "utils/musa_einsum_op_util.h"
 
 namespace tensorflow {
 namespace musa {
