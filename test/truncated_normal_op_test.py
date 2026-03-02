@@ -1,4 +1,6 @@
 # truncatedNormal_op_test.py
+import time
+
 import numpy as np
 import tensorflow as tf
 from musa_test_utils import MUSATestCase
@@ -6,12 +8,38 @@ from musa_test_utils import MUSATestCase
 class TruncatedNormalTest(MUSATestCase):
     """TruncatedNormal 算子专用测试"""
 
+    def _run_and_log_perf(self, shape, mean=0.0, stddev=1.0, dtype=tf.float32):
+        """在 CPU 与 MUSA 上执行 truncated_normal 并打印性能日志，返回 MUSA 结果。"""
+
+        def truncated_normal_op():
+            return tf.random.truncated_normal(
+                shape, mean=mean, stddev=stddev, dtype=dtype
+            )
+
+        truncated_normal_op.__name__ = (
+            f"truncated_normal[shape={tuple(shape) if isinstance(shape, list) else shape}]"
+        )
+
+        cpu_start = time.perf_counter()
+        with tf.device('/CPU:0'):
+            cpu_result = truncated_normal_op()
+        cpu_result.numpy()
+        cpu_ms = (time.perf_counter() - cpu_start) * 1000.0
+
+        musa_start = time.perf_counter()
+        with tf.device('/device:MUSA:0'):
+            musa_result = truncated_normal_op()
+        musa_result.numpy()
+        musa_ms = (time.perf_counter() - musa_start) * 1000.0
+
+        print(self._format_perf_line(truncated_normal_op, dtype, [], cpu_ms, musa_ms))
+        return musa_result
+
     def test_basic_functionality(self):
         """基础功能：生成截断正态分布随机数"""
         shape = [1000, 100]  # 足够大的样本用于统计验证
         mean, stddev = 0.0, 1.0
-        with tf.device('/device:MUSA:0'):
-            result = tf.random.truncated_normal(shape, mean=mean, stddev=stddev, dtype=tf.float32)
+        result = self._run_and_log_perf(shape, mean=mean, stddev=stddev, dtype=tf.float32)
         
         val = result.numpy()
         self.assertEqual(val.shape, tuple(shape))
@@ -32,8 +60,7 @@ class TruncatedNormalTest(MUSATestCase):
         lower_bound = mean - 2 * stddev  # 1.0
         upper_bound = mean + 2 * stddev  # 9.0
         
-        with tf.device('/device:MUSA:0'):
-            result = tf.random.truncated_normal(shape, mean=mean, stddev=stddev, dtype=tf.float32)
+        result = self._run_and_log_perf(shape, mean=mean, stddev=stddev, dtype=tf.float32)
         
         val = result.numpy()
         # 所有值必须严格在边界内
@@ -53,8 +80,7 @@ class TruncatedNormalTest(MUSATestCase):
             [2, 3, 4, 5]  # 4D张量
         ]
         for shape in shapes:
-            with tf.device('/device:MUSA:0'):
-                result = tf.random.truncated_normal(shape, dtype=tf.float32)
+            result = self._run_and_log_perf(shape, dtype=tf.float32)
             
             self.assertEqual(result.shape, tuple(shape))
             self.assertEqual(result.dtype, tf.float32)
@@ -68,8 +94,7 @@ class TruncatedNormalTest(MUSATestCase):
         """测试不同浮点类型支持"""
         for dtype, tol in [(tf.float16, 0.3), (tf.float32, 0.15), (tf.float64, 0.1), (tf.bfloat16, 0.3)]:
             shape = [10000]
-            with tf.device('/device:MUSA:0'):
-                result = tf.random.truncated_normal(shape, mean=0.0, stddev=1.0, dtype=dtype)
+            result = self._run_and_log_perf(shape, mean=0.0, stddev=1.0, dtype=dtype)
             
             self.assertEqual(result.dtype, dtype)
             val = result.numpy().astype(np.float32)
@@ -84,9 +109,8 @@ class TruncatedNormalTest(MUSATestCase):
     def test_randomness(self):
         """验证两次调用结果不同（随机性）"""
         shape = [10, 10]
-        with tf.device('/device:MUSA:0'):
-            r1 = tf.random.truncated_normal(shape, dtype=tf.float32).numpy()
-            r2 = tf.random.truncated_normal(shape, dtype=tf.float32).numpy()
+        r1 = self._run_and_log_perf(shape, dtype=tf.float32).numpy()
+        r2 = self._run_and_log_perf(shape, dtype=tf.float32).numpy()
         
         # 两次结果应不同
         self.assertFalse(np.allclose(r1, r2), 
@@ -95,8 +119,7 @@ class TruncatedNormalTest(MUSATestCase):
     def test_empty_tensor(self):
         """空张量处理：不崩溃且返回正确形状"""
         shape = [0, 5]
-        with tf.device('/device:MUSA:0'):
-            result = tf.random.truncated_normal(shape, dtype=tf.float32)
+        result = self._run_and_log_perf(shape, dtype=tf.float32)
         
         self.assertEqual(result.shape, (0, 5))
         self.assertEqual(result.numpy().size, 0)
@@ -104,8 +127,7 @@ class TruncatedNormalTest(MUSATestCase):
     def test_large_tensor(self):
         """大张量生成：验证内存和性能稳定性"""
         shape = [1000, 1000]  # 1M 元素
-        with tf.device('/device:MUSA:0'):
-            result = tf.random.truncated_normal(shape, dtype=tf.float32)
+        result = self._run_and_log_perf(shape, dtype=tf.float32)
         
         val = result.numpy()
         self.assertEqual(val.shape, (1000, 1000))
@@ -124,8 +146,7 @@ class TruncatedNormalTest(MUSATestCase):
         ]
         
         for mean, stddev in test_cases:
-            with tf.device('/device:MUSA:0'):
-                result = tf.random.truncated_normal(shape, mean=mean, stddev=stddev, dtype=tf.float32)
+            result = self._run_and_log_perf(shape, mean=mean, stddev=stddev, dtype=tf.float32)
             
             val = result.numpy()
             # 验证截断范围
@@ -140,8 +161,7 @@ class TruncatedNormalTest(MUSATestCase):
     def test_distribution_properties(self):
         """验证截断正态分布特性"""
         shape = [100000]  # 大样本
-        with tf.device('/device:MUSA:0'):
-            result = tf.random.truncated_normal(shape, mean=0.0, stddev=1.0, dtype=tf.float32)
+        result = self._run_and_log_perf(shape, mean=0.0, stddev=1.0, dtype=tf.float32)
         
         val = result.numpy()
         
@@ -161,8 +181,7 @@ class TruncatedNormalTest(MUSATestCase):
     def test_no_extreme_outliers(self):
         """验证无极端异常值（截断的主要作用）"""
         shape = [50000]
-        with tf.device('/device:MUSA:0'):
-            result = tf.random.truncated_normal(shape, dtype=tf.float32)
+        result = self._run_and_log_perf(shape, dtype=tf.float32)
         
         val = result.numpy()
         
@@ -177,12 +196,11 @@ class TruncatedNormalTest(MUSATestCase):
         seed = 12345
         
         try:
-            with tf.device('/device:MUSA:0'):
-                tf.random.set_seed(seed)
-                r1 = tf.random.truncated_normal(shape, dtype=tf.float32).numpy()
-                
-                tf.random.set_seed(seed)
-                r2 = tf.random.truncated_normal(shape, dtype=tf.float32).numpy()
+            tf.random.set_seed(seed)
+            r1 = self._run_and_log_perf(shape, dtype=tf.float32).numpy()
+
+            tf.random.set_seed(seed)
+            r2 = self._run_and_log_perf(shape, dtype=tf.float32).numpy()
             
             # 相同 seed 应生成相同结果
             self.assertTrue(np.allclose(r1, r2), 

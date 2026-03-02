@@ -16,6 +16,7 @@
 """Utilities for MUSA kernel tests."""
 
 import os
+import time
 import tensorflow as tf
 
 
@@ -62,6 +63,36 @@ def load_musa_plugin():
 class MUSATestCase(tf.test.TestCase):
   """Base test class for MUSA kernel tests."""
 
+  _ANSI_RED = "\033[31m"
+  _ANSI_GREEN = "\033[32m"
+  _ANSI_RESET = "\033[0m"
+
+  def _format_perf_line(self, op_func, dtype, input_tensors, cpu_ms, musa_ms):
+    """Format a concise performance line for test output."""
+    test_id = self.id()
+    op_name = getattr(op_func, "__name__", str(op_func))
+    dtype_name = dtype.name if hasattr(dtype, "name") else str(dtype)
+    shapes = [tuple(t.shape.as_list()) for t in input_tensors]
+
+    if musa_ms > 0:
+      speedup = cpu_ms / musa_ms
+      speedup_str = f"{speedup:.3f}x"
+    else:
+      speedup_str = "inf"
+
+    cpu_time_str = f"{cpu_ms:.3f}ms"
+    musa_time_str = f"{musa_ms:.3f}ms"
+    if musa_ms > cpu_ms:
+      musa_time_str = f"{self._ANSI_RED}{musa_time_str}{self._ANSI_RESET}"
+    elif cpu_ms > musa_ms:
+      musa_time_str = f"{self._ANSI_GREEN}{musa_time_str}{self._ANSI_RESET}"
+
+    return (
+        f"[PERF] test={test_id} op={op_name} dtype={dtype_name} "
+        f"shapes={shapes} cpu={cpu_time_str} musa={musa_time_str} "
+        f"speedup(cpu/musa)={speedup_str}"
+    )
+
   @classmethod
   def setUpClass(cls):
     """Set up the test class by loading the MUSA plugin."""
@@ -86,10 +117,18 @@ class MUSATestCase(tf.test.TestCase):
                                atol=1e-8):
     """Compare results between CPU and MUSA devices."""
     # Test on CPU
+    cpu_start = time.perf_counter()
     cpu_result = self._test_op_device_placement(op_func, input_tensors, '/CPU:0')
+    cpu_result.numpy()
+    cpu_ms = (time.perf_counter() - cpu_start) * 1000.0
 
     # Test on MUSA
+    musa_start = time.perf_counter()
     musa_result = self._test_op_device_placement(op_func, input_tensors, '/device:MUSA:0')
+    musa_result.numpy()
+    musa_ms = (time.perf_counter() - musa_start) * 1000.0
+
+    print(self._format_perf_line(op_func, dtype, input_tensors, cpu_ms, musa_ms))
 
     # Convert to float32 for comparison if needed
     if dtype in [tf.float16, tf.bfloat16]:

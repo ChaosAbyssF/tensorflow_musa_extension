@@ -10,19 +10,15 @@ class EinsumOpTest(MUSATestCase):
 	"""Tests for MUSA Einsum operator with TensorFlow-compatible behavior."""
 
 	def _run_cpu_musa(self, equation, inputs, rtol=1e-5, atol=1e-8):
-		"""Run einsum on CPU and MUSA then compare outputs."""
-		with tf.device('/CPU:0'):
-			cpu_result = tf.einsum(equation, *inputs)
+		"""Run einsum on CPU and MUSA, compare outputs, and print perf logs."""
+		def einsum_op(*op_inputs):
+			return tf.einsum(equation, *op_inputs)
 
-		with tf.device('/device:MUSA:0'):
-			musa_result = tf.einsum(equation, *inputs)
-
-		if cpu_result.dtype in [tf.float16, tf.bfloat16]:
-			cpu_result = tf.cast(cpu_result, tf.float32)
-			musa_result = tf.cast(musa_result, tf.float32)
-
-		self.assertAllEqual(cpu_result.shape, musa_result.shape)
-		self.assertAllClose(cpu_result.numpy(), musa_result.numpy(), rtol=rtol, atol=atol)
+		einsum_op.__name__ = f"einsum[{equation}]"
+		dtype = inputs[0].dtype if inputs else tf.float32
+		self._compare_cpu_musa_results(
+			einsum_op, inputs, dtype=dtype, rtol=rtol, atol=atol
+		)
 
 	def _assert_error_consistency(self, equation, inputs):
 		"""Assert CPU and MUSA both raise TensorFlow exceptions for invalid inputs."""

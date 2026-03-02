@@ -6,9 +6,33 @@ from musa_test_utils import MUSATestCase
 class RandomStandardNormalTest(MUSATestCase):
     """RandomStandardNormal 算子专用测试"""
 
+    def _log_random_normal_perf(self, shape, dtype=tf.float32, mean=0.0, stddev=1.0):
+        """输出 random.normal 在 CPU 与 MUSA 的耗时对比。"""
+        op_name = f"random.normal[shape={tuple(shape)},mean={mean},stddev={stddev}]"
+
+        def random_normal_op():
+            return tf.random.normal(shape, mean=mean, stddev=stddev, dtype=dtype)
+
+        random_normal_op.__name__ = op_name
+
+        cpu_start = tf.timestamp()
+        with tf.device('/CPU:0'):
+            cpu_result = random_normal_op()
+        cpu_result.numpy()
+        cpu_ms = float((tf.timestamp() - cpu_start).numpy() * 1000.0)
+
+        musa_start = tf.timestamp()
+        with tf.device('/device:MUSA:0'):
+            musa_result = random_normal_op()
+        musa_result.numpy()
+        musa_ms = float((tf.timestamp() - musa_start).numpy() * 1000.0)
+
+        print(self._format_perf_line(random_normal_op, dtype, [], cpu_ms, musa_ms))
+
     def test_basic_functionality(self):
         """基础功能：生成标准正态分布随机数"""
         shape = [1000, 100]  # 足够大的样本用于统计验证
+        self._log_random_normal_perf(shape, dtype=tf.float32, mean=0.0, stddev=1.0)
         with tf.device('/device:MUSA:0'):
             result = tf.random.normal(shape, mean=0.0, stddev=1.0, dtype=tf.float32)
         
@@ -30,6 +54,7 @@ class RandomStandardNormalTest(MUSATestCase):
             [2, 3, 4, 5]  # 4D张量
         ]
         for shape in shapes:
+            self._log_random_normal_perf(shape, dtype=tf.float32)
             with tf.device('/device:MUSA:0'):
                 result = tf.random.normal(shape, dtype=tf.float32)
             
@@ -44,6 +69,7 @@ class RandomStandardNormalTest(MUSATestCase):
         """测试不同浮点类型支持"""
         for dtype, tol in [(tf.float16, 0.3), (tf.float32, 0.15), (tf.float64, 0.1), (tf.bfloat16, 0.3)]:
             shape = [10000]
+            self._log_random_normal_perf(shape, dtype=dtype)
             with tf.device('/device:MUSA:0'):
                 result = tf.random.normal(shape, dtype=dtype)
             
@@ -57,6 +83,7 @@ class RandomStandardNormalTest(MUSATestCase):
     def test_randomness(self):
         """验证两次调用结果不同（随机性）"""
         shape = [10, 10]
+        self._log_random_normal_perf(shape, dtype=tf.float32)
         with tf.device('/device:MUSA:0'):
             r1 = tf.random.normal(shape, dtype=tf.float32).numpy()
             r2 = tf.random.normal(shape, dtype=tf.float32).numpy()
@@ -68,6 +95,7 @@ class RandomStandardNormalTest(MUSATestCase):
     def test_empty_tensor(self):
         """空张量处理：不崩溃且返回正确形状"""
         shape = [0, 5]
+        self._log_random_normal_perf(shape, dtype=tf.float32)
         with tf.device('/device:MUSA:0'):
             result = tf.random.normal(shape, dtype=tf.float32)
         
@@ -77,6 +105,7 @@ class RandomStandardNormalTest(MUSATestCase):
     def test_large_tensor(self):
         """大张量生成：验证内存和性能稳定性"""
         shape = [1000, 1000]  # 1M 元素
+        self._log_random_normal_perf(shape, dtype=tf.float32)
         with tf.device('/device:MUSA:0'):
             result = tf.random.normal(shape, dtype=tf.float32)
         
@@ -89,6 +118,7 @@ class RandomStandardNormalTest(MUSATestCase):
     def test_distribution_properties(self):
         """深入验证正态分布特性（68-95-99.7法则）"""
         shape = [100000]  # 大样本
+        self._log_random_normal_perf(shape, dtype=tf.float32)
         with tf.device('/device:MUSA:0'):
             result = tf.random.normal(shape, dtype=tf.float32)
         
