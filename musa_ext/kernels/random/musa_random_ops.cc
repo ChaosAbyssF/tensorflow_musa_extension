@@ -70,11 +70,6 @@ struct UniformLauncherTrait<double> {
 // Helper to get MUSA stream
 template <typename T>
 void* GetStream(OpKernelContext* ctx) {
-  if (std::is_same<T, float>::value || std::is_same<T, double>::value) {
-    // For uniform ops using legacy launchers
-    return nullptr;
-  }
-  // For normal ops using MusaOpKernel
   auto* device = GetDeviceByCtx(ctx);
   return device ? device->GetStream() : nullptr;
 }

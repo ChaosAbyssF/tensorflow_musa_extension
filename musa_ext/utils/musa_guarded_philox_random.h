@@ -2,6 +2,7 @@
 
 #include <musa_runtime.h>
 #include <musa_fp16.h>
+#include <murand_kernel.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -10,7 +11,7 @@
 #include <type_traits>
 
 // #if defined(__CUDACC__) || defined(__MUSA__)
-#define MUSA_HOST_DEVICE __host__ __device__
+#define MUSA_HOST_DEVICE __device__
 // #else
 // #define MUSA_HOST_DEVICE
 // #endif
@@ -29,7 +30,18 @@ class PhiloxRandom {
   MUSA_HOST_DEVICE void Skip(uint64_t skip) { counter_ += skip; }
 
   MUSA_HOST_DEVICE void Next(uint32_t result[kResultElementCount]) {
-    FillBlock(counter_, result);
+    murandStatePhilox4_32_10_t state;
+    murand_init(static_cast<unsigned long long>(key0_),
+                static_cast<unsigned long long>(key1_),
+                static_cast<unsigned long long>(counter_) *
+                    static_cast<unsigned long long>(kResultElementCount),
+                &state);
+    uint4 values = murand4(&state);
+    result[0] = values.x;
+    result[1] = values.y;
+    result[2] = values.z;
+    result[3] = values.w;
+    // FillBlock(counter_, result);
     ++counter_;
   }
 

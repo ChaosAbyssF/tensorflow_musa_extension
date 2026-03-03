@@ -123,7 +123,7 @@ set_target_properties(musa_plugin PROPERTIES
 )
 
 # Link
-target_link_libraries(musa_plugin PRIVATE ${TF_LINK_FLAGS} musa mublas mudnn rt)
+target_link_libraries(musa_plugin PRIVATE ${TF_LINK_FLAGS} musa mublas mudnn murand rt)
 
 # Output configuration
 set_target_properties(musa_plugin PROPERTIES
