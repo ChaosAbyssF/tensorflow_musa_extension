@@ -53,36 +53,41 @@ __device__ __forceinline__ bool IsNonZeroValue<bfloat16>(const bfloat16& v) {
   return fv != 0.0f;
 }
 
-template <typename T>
-__global__ void IsNonZeroCountKernel(const T* input, int* output, int n) {
+template <typename T, typename TIndex>
+__global__ void IsNonZeroCountKernel(const T* input, TIndex* output, int n) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < n && IsNonZeroValue<T>(input[idx])) {
-    atomicAdd(output, 1);
+    atomicAdd(output, static_cast<TIndex>(1));
   }
 }
 
-template <typename T>
-void LaunchIsNonZeroCount(const T* input, int* output, int n,
+template <typename T, typename TIndex>
+void LaunchIsNonZeroCount(const T* input, TIndex* output, int n,
                           musaStream_t stream) {
   if (n <= 0) return;
   int threads = 256;
   int blocks = (n + threads - 1) / threads;
-  IsNonZeroCountKernel<T><<<blocks, threads, 0, stream>>>(input, output, n);
-  musaError_t err = musaGetLastError();
-  (void)err;
+  IsNonZeroCountKernel<T, TIndex><<<blocks, threads, 0, stream>>>(input, output, n);
 }
 
-#define REGISTER_IS_NON_ZERO_COUNT(T)                                            \
-  template void LaunchIsNonZeroCount<T>(const T* input, int* output, int n, \
+#define REGISTER_IS_NON_ZERO_COUNT(T, TIndex)                                            \
+  template void LaunchIsNonZeroCount<T, TIndex>(const T* input, TIndex* output, int n, \
                                        musaStream_t stream)
 
-REGISTER_IS_NON_ZERO_COUNT(float);
-REGISTER_IS_NON_ZERO_COUNT(double);
-REGISTER_IS_NON_ZERO_COUNT(Eigen::half);
-REGISTER_IS_NON_ZERO_COUNT(bfloat16);
-REGISTER_IS_NON_ZERO_COUNT(int32);
-REGISTER_IS_NON_ZERO_COUNT(int64);
-REGISTER_IS_NON_ZERO_COUNT(bool);
+REGISTER_IS_NON_ZERO_COUNT(float, int32);
+REGISTER_IS_NON_ZERO_COUNT(double, int32);
+REGISTER_IS_NON_ZERO_COUNT(Eigen::half, int32);
+REGISTER_IS_NON_ZERO_COUNT(bfloat16, int32);
+REGISTER_IS_NON_ZERO_COUNT(int32, int32);
+REGISTER_IS_NON_ZERO_COUNT(int64, int32);
+REGISTER_IS_NON_ZERO_COUNT(bool, int32);
 
+// REGISTER_IS_NON_ZERO_COUNT(float, int64);
+// REGISTER_IS_NON_ZERO_COUNT(double, int64);
+// REGISTER_IS_NON_ZERO_COUNT(Eigen::half, int64);
+// REGISTER_IS_NON_ZERO_COUNT(bfloat16, int64);
+// REGISTER_IS_NON_ZERO_COUNT(int32, int64);
+// REGISTER_IS_NON_ZERO_COUNT(int64, int64);
+// REGISTER_IS_NON_ZERO_COUNT(bool, int64);
 }  // namespace musa
 }  // namespace tensorflow

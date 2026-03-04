@@ -24,7 +24,7 @@ class MusaWhereOp : public MusaOpKernel {
     if (input.NumElements() < std::numeric_limits<int32_t>::max()) {
       ComputeType<int32_t>(context, input, input_dims);
     } else {
-      ComputeType<int64_t>(context, input, input_dims);
+      // Computesype<int64_t>(context, input, input_dims);
     }
   }
 
@@ -59,7 +59,7 @@ class MusaWhereOp : public MusaOpKernel {
 #define HANDLE_DIM(NDIM)                                              \
   case NDIM: {                                                        \
     Status where_status = Where::Compute<NDIM, T, Tindex>(            \
-        context, input.tensor<T, NDIM>(), output->matrix<int64_t>()); \
+        context, input.tensor<T, NDIM>(), output->matrix<Tindex>()); \
     OP_REQUIRES_OK(context, where_status);                            \
                                                                       \
   } break

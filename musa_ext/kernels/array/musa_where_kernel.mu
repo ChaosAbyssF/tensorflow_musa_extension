@@ -1,5 +1,6 @@
 #include <musa_fp16.h>
 #include <musa_runtime.h>
+
 #include <cstdint>
 
 #include "tensorflow/core/framework/bfloat16.h"
@@ -68,24 +69,22 @@ __global__ void MusaSelectFlaggedKernel(const T* __restrict__ d_flags,
 }
 
 template <typename T, typename TIndex>
-musaError_t LaunchMusaSelectFlaggedKernel(const T* input,
-                                          TIndex* selected_indices,
-                                          TIndex* num_selected_out,
-                                          int num_items, musaStream_t stream) {
+void LaunchMusaSelectFlaggedKernel(const T* input, TIndex* selected_indices,
+                                   TIndex* num_selected_out, int num_items,
+                                   musaStream_t stream) {
   const int threads = 256;
   const int blocks = static_cast<int>((num_items + threads - 1) / threads);
   MusaSelectFlaggedKernel<T, TIndex><<<blocks, threads, 0, stream>>>(
       input, selected_indices, num_selected_out, num_items);
-  return musaGetLastError();
 }
 
-#define REGISTER_SELECT_FLAGGED(T, TINDEX)                                  \
-  template musaError_t LaunchMusaSelectFlaggedKernel<T, TINDEX>(               \
+#define INSTANTIATE_SELECT_FLAGGED(T, TINDEX)                                  \
+  template void LaunchMusaSelectFlaggedKernel<T, TINDEX>(                      \
       const T* input, TINDEX* selected_indices, TINDEX* num_selected_out, int, \
       musaStream_t stream)
 
-#define INSTANTIATE_SELECT_FLAGGED_ALL(T)                                       \
-  INSTANTIATE_SELECT_FLAGGED(T, int32_t);                                      \
+#define INSTANTIATE_SELECT_FLAGGED_ALL(T) \
+  INSTANTIATE_SELECT_FLAGGED(T, int32_t); \
   INSTANTIATE_SELECT_FLAGGED(T, int64_t)
 
 INSTANTIATE_SELECT_FLAGGED_ALL(bool);
@@ -109,7 +108,7 @@ struct StridesPack {
 template <int NDIM, typename TIndex>
 __global__ void PropagateWhereIndicesKernel(
     const TIndex output_rows, const StridesPack<NDIM, TIndex> strides,
-    const TIndex* __restrict__ selected_indices, int64_t* __restrict__ output) {
+    const TIndex* __restrict__ selected_indices, TIndex* __restrict__ output) {
   const TIndex i = static_cast<TIndex>(blockIdx.x * blockDim.x + threadIdx.x);
   if (i < output_rows) {
     TIndex index_value = selected_indices[i];
@@ -123,13 +122,12 @@ __global__ void PropagateWhereIndicesKernel(
 }
 
 template <int NDIM, typename TIndex>
-musaError_t LaunchPropagateWhereIndicesKernel(const TIndex output_rows,
-                                              const TIndex* strides_host,
-                                              const TIndex* selected_indices,
-                                              int64_t* output,
-                                              musaStream_t stream) {
+void LaunchPropagateWhereIndicesKernel(const TIndex output_rows,
+                                       const TIndex* strides_host,
+                                       const TIndex* selected_indices,
+                                       TIndex* output, musaStream_t stream) {
   if (output_rows <= static_cast<TIndex>(0)) {
-    return musaSuccess;
+    return;
   }
 
   StridesPack<NDIM, TIndex> pack;
@@ -144,31 +142,30 @@ musaError_t LaunchPropagateWhereIndicesKernel(const TIndex output_rows,
   PropagateWhereIndicesKernel<NDIM, TIndex>
       <<<grid_size, block_size, 0, stream>>>(output_rows, pack,
                                              selected_indices, output);
-  return musaGetLastError();
 }
 
-#define REGISTER_PROPAGATE(NDIM, TINDEX)                             \
-  template musaError_t LaunchPropagateWhereIndicesKernel<NDIM, TINDEX>( \
-      const TINDEX output_rows, const TINDEX* strides_host,             \
-      const TINDEX* selected_indices, int64_t* output, musaStream_t stream)
+#define INSTANTIATE_PROPAGATE(NDIM, TINDEX)                      \
+  template void LaunchPropagateWhereIndicesKernel<NDIM, TINDEX>( \
+      const TINDEX output_rows, const TINDEX* strides_host,      \
+      const TINDEX* selected_indices, TINDEX* output, musaStream_t stream)
 
-REGISTER_PROPAGATE(1, int32);
-REGISTER_PROPAGATE(2, int32);
-REGISTER_PROPAGATE(3, int32);
-REGISTER_PROPAGATE(4, int32);
-REGISTER_PROPAGATE(5, int32);
-REGISTER_PROPAGATE(6, int32);
-REGISTER_PROPAGATE(7, int32);
-REGISTER_PROPAGATE(8, int32);
+INSTANTIATE_PROPAGATE(1, int32);
+INSTANTIATE_PROPAGATE(2, int32);
+INSTANTIATE_PROPAGATE(3, int32);
+INSTANTIATE_PROPAGATE(4, int32);
+INSTANTIATE_PROPAGATE(5, int32);
+INSTANTIATE_PROPAGATE(6, int32);
+INSTANTIATE_PROPAGATE(7, int32);
+INSTANTIATE_PROPAGATE(8, int32);
 
-REGISTER_PROPAGATE(1, int64);
-REGISTER_PROPAGATE(2, int64);
-REGISTER_PROPAGATE(3, int64);
-REGISTER_PROPAGATE(4, int64);
-REGISTER_PROPAGATE(5, int64);
-REGISTER_PROPAGATE(6, int64);
-REGISTER_PROPAGATE(7, int64);
-REGISTER_PROPAGATE(8, int64);
+// INSTANTIATE_PROPAGATE(1, int64);
+// INSTANTIATE_PROPAGATE(2, int64);
+// INSTANTIATE_PROPAGATE(3, int64);
+// INSTANTIATE_PROPAGATE(4, int64);
+// INSTANTIATE_PROPAGATE(5, int64);
+// INSTANTIATE_PROPAGATE(6, int64);
+// INSTANTIATE_PROPAGATE(7, int64);
+// INSTANTIATE_PROPAGATE(8, int64);
 
 #undef INSTANTIATE_PROPAGATE
 

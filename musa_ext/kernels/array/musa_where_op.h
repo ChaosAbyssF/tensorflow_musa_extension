@@ -15,9 +15,20 @@ namespace tensorflow {
 namespace musa {
 
 // Count Non Zero within the input tensor
-template <typename T>
-void LaunchIsNonZeroCount(const T* input, int* output, int n,
+template <typename T, typename TIndex>
+void LaunchIsNonZeroCount(const T* input, TIndex* output, int n,
                           musaStream_t stream);
+
+template <typename T, typename TIndex>
+void LaunchMusaSelectFlaggedKernel(const T* input, TIndex* selected_indices,
+                                   TIndex* num_selected_out, int num_items,
+                                   musaStream_t stream);
+
+template <int NDIM, typename TIndex>
+void LaunchPropagateWhereIndicesKernel(const TIndex output_rows,
+                                       const TIndex* strides_host,
+                                       const TIndex* selected_indices,
+                                       TIndex* output, musaStream_t stream);
 
 template <typename T, typename TIndex>
 struct NumTrue {
@@ -37,9 +48,9 @@ struct NumTrue {
     // non-zero values into a 64-bit device scalar, then copy/truncate the
     // result into the requested `TIndex` device scalar.
     Tensor count64_wrapper;
-    TF_RETURN_IF_ERROR(
-        ctx->allocate_temp(DT_INT32, TensorShape({}), &count64_wrapper));
-    int* count_device = count64_wrapper.scalar<int>().data();
+    TF_RETURN_IF_ERROR(ctx->allocate_temp(DataTypeToEnum<TIndex>::value,
+                        TensorShape({}), &count64_wrapper));
+    TIndex* count_device = count64_wrapper.scalar<TIndex>().data();
 
     LaunchIsNonZeroCount<T>(input_data, count_device,
                             static_cast<int>(input.size()), mstream);
@@ -69,18 +80,6 @@ Eigen::array<TIndex, NDIM> CalculateStrides(
   return strides;
 }
 
-template <int NDIM, typename TIndex>
-musaError_t LaunchPropagateWhereIndicesKernel(const TIndex output_rows,
-                                              const TIndex* strides_host,
-                                              const TIndex* selected_indices,
-                                              int64_t* output,
-                                              musaStream_t stream);
-template <typename T, typename TIndex>
-musaError_t LaunchMusaSelectFlaggedKernel(const T* input,
-                                          TIndex* selected_indices,
-                                          TIndex* num_selected_out,
-                                          int num_items, musaStream_t stream);
-
 // Be advised: The original TF implementation has an extra template parameter
 // called `IsConvertibleToBool`, which considered data types that cannot be
 // directly converted to bool, namely complex types. For now we only consider
@@ -89,7 +88,7 @@ struct Where {
   template <int NDIM, typename T, typename TIndex>
   static Status Compute(OpKernelContext* ctx,
                         typename TTypes<T, NDIM>::ConstTensor input,
-                        typename TTypes<int64_t>::Matrix output) {
+                        typename TTypes<TIndex>::Matrix output) {
     if (output.dimension(0) == 0) {
       return Status::OK();
     }
@@ -121,24 +120,15 @@ struct Where {
                               musaGetErrorString(m_err));
     }
 
-    m_err = LaunchMusaSelectFlaggedKernel<T, TIndex>(
+    LaunchMusaSelectFlaggedKernel<T, TIndex>(
         input.data(), selected_indices, found_true_device,
         static_cast<int>(input.size()), stream);
-    if (m_err != musaSuccess) {
-      return errors::Internal("WhereOp: MusaSelectFlaggedKernel failed: ",
-                              musaGetErrorString(m_err));
-    }
 
     const Eigen::array<TIndex, NDIM> strides =
         CalculateStrides<TIndex, T, NDIM>(input);
     const TIndex output_rows = output.dimension(0);
-    musaError_t launch_status = LaunchPropagateWhereIndicesKernel<NDIM, TIndex>(
+    LaunchPropagateWhereIndicesKernel<NDIM, TIndex>(
         output_rows, strides.data(), selected_indices, output.data(), stream);
-    if (launch_status != musaSuccess) {
-      return errors::Internal(
-          "WhereOp: Failed to launch PropagateWhereIndicesKernel, status: ",
-          musaGetErrorString(launch_status));
-    }
 
     return Status::OK();
   }
