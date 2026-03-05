@@ -24,7 +24,7 @@ void LaunchIsNonZeroCount(const T* input, TIndex* output, int n,
 REGISTER_OP("MusaIsNonZeroCount")
     .Input("input: T")
     .Output("count: Tidx")
-    .Attr("T: {float, double, half, bfloat16, int32, int64, bool}")
+    .Attr("T: {float, double, half, bfloat16, int32, int64, bool, int8, int16, uint8}")
     .Attr("Tidx: {int32}")
     .SetShapeFn(shape_inference::ScalarShape);
 
@@ -62,6 +62,11 @@ class MusaIsNonZeroCountOp : public MusaOpKernel {
 
     LaunchIsNonZeroCount<T, TIndex>(
         input.flat<T>().data(), output->flat<TIndex>().data(), elements, stream);
+
+    auto kernel_status = musaGetLastError();
+    OP_REQUIRES(ctx, kernel_status == musaSuccess,
+                errors::Internal("MUSA IsNonZeroCount kernel failed: ",
+                                 musaGetErrorString(kernel_status)));
   }
 };
 
@@ -79,6 +84,9 @@ REGISTER_MUSA_IS_NON_ZERO_COUNT(bfloat16);
 REGISTER_MUSA_IS_NON_ZERO_COUNT(int32);
 REGISTER_MUSA_IS_NON_ZERO_COUNT(int64);
 REGISTER_MUSA_IS_NON_ZERO_COUNT(bool);
+REGISTER_MUSA_IS_NON_ZERO_COUNT(int8);
+REGISTER_MUSA_IS_NON_ZERO_COUNT(int16);
+REGISTER_MUSA_IS_NON_ZERO_COUNT(uint8);
 
 #undef REGISTER_MUSA_IS_NON_ZERO_COUNT
 
