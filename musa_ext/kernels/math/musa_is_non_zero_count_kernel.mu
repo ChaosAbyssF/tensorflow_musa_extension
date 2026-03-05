@@ -10,7 +10,7 @@
 
 namespace tensorflow {
 namespace musa {
-  
+
 __device__ __forceinline__ float LoadFloat(const float* p) { return *p; }
 
 __device__ __forceinline__ float LoadFloat(const Eigen::half* p) {
@@ -42,7 +42,8 @@ __device__ __forceinline__ bool IsNonZeroValue<double>(const double& v) {
 }
 
 template <>
-__device__ __forceinline__ bool IsNonZeroValue<Eigen::half>(const Eigen::half& v) {
+__device__ __forceinline__ bool IsNonZeroValue<Eigen::half>(
+    const Eigen::half& v) {
   float fv = LoadFloat(&v);
   return fv != 0.0f;
 }
@@ -57,7 +58,7 @@ template <typename T, typename TIndex>
 __global__ void IsNonZeroCountKernel(const T* input, TIndex* output, int n) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < n && IsNonZeroValue<T>(input[idx])) {
-    atomicAdd(output, static_cast<TIndex>(1));
+    atomicAdd(output, 1);
   }
 }
 
@@ -67,12 +68,13 @@ void LaunchIsNonZeroCount(const T* input, TIndex* output, int n,
   if (n <= 0) return;
   int threads = 256;
   int blocks = (n + threads - 1) / threads;
-  IsNonZeroCountKernel<T, TIndex><<<blocks, threads, 0, stream>>>(input, output, n);
+  IsNonZeroCountKernel<T, TIndex>
+      <<<blocks, threads, 0, stream>>>(input, output, n);
 }
 
-#define REGISTER_IS_NON_ZERO_COUNT(T, TIndex)                                            \
-  template void LaunchIsNonZeroCount<T, TIndex>(const T* input, TIndex* output, int n, \
-                                       musaStream_t stream)
+#define REGISTER_IS_NON_ZERO_COUNT(T, TIndex)    \
+  template void LaunchIsNonZeroCount<T, TIndex>( \
+      const T* input, TIndex* output, int n, musaStream_t stream)
 
 REGISTER_IS_NON_ZERO_COUNT(float, int32);
 REGISTER_IS_NON_ZERO_COUNT(double, int32);

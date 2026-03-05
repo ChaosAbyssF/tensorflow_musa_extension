@@ -48,11 +48,12 @@ struct NumTrue {
     // non-zero values into a 64-bit device scalar, then copy/truncate the
     // result into the requested `TIndex` device scalar.
     Tensor count64_wrapper;
-    TF_RETURN_IF_ERROR(ctx->allocate_temp(DataTypeToEnum<TIndex>::value,
-                        TensorShape({}), &count64_wrapper));
+    TF_RETURN_IF_ERROR(
+      ctx->allocate_temp(DataTypeToEnum<TIndex>::value, TensorShape({}),
+                 &count64_wrapper));
     TIndex* count_device = count64_wrapper.scalar<TIndex>().data();
 
-    LaunchIsNonZeroCount<T>(input_data, count_device,
+    LaunchIsNonZeroCount<T, TIndex>(input_data, count_device,
                             static_cast<int>(input.size()), mstream);
 
     // Copy lower bytes to the `TIndex` device scalar (truncate if needed).
