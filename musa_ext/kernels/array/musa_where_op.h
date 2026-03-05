@@ -25,9 +25,8 @@ void LaunchMusaMarkFlaggedKernel(const T* input, TIndex* d_marks, int num_items,
 
 template <typename T, typename TIndex>
 void LaunchMusaSelectFlaggedKernel(const T* input, TIndex* selected_indices,
-                                   const TIndex* d_scanned, 
-                                   const TIndex* d_marks,
-                                   int num_items,
+                                   const TIndex* d_scanned,
+                                   const TIndex* d_marks, int num_items,
                                    musaStream_t stream);
 
 template <int NDIM, typename TIndex>
@@ -40,9 +39,9 @@ template <typename T, typename TIndex>
 struct NumTrue {
   static Status Compute(OpKernelContext* ctx,
                         typename TTypes<T>::ConstFlat input,
-                        typename TTypes<TIndex>::UnalignedScalar num_true) {
+                        typename TTypes<TIndex>::UnalignedScalar num_true,
+                        Tensor* marks_t_out) {
     musaStream_t mstream = GetMusaStreamByCtx(ctx);
-    const T* input_data = reinterpret_cast<const T*>(input.data());
     TIndex* num_true_data = num_true.data();
 
     if (input.size() == 0) {
@@ -50,20 +49,34 @@ struct NumTrue {
       return Status::OK();
     }
 
-    // Use the new LaunchIsNonZeroCount operator which directly counts
-    // non-zero values into a 64-bit device scalar, then copy/truncate the
-    // result into the requested `TIndex` device scalar.
-    Tensor count64_wrapper;
-    TF_RETURN_IF_ERROR(
-      ctx->allocate_temp(DataTypeToEnum<TIndex>::value, TensorShape({1}),
-                 &count64_wrapper));
-    TIndex* count_device = count64_wrapper.flat<TIndex>().data();
+    // 1. Mark matching elements (1 if match, 0 if not)
+    TF_RETURN_IF_ERROR(ctx->allocate_temp(DataTypeToEnum<TIndex>::value,
+                                          TensorShape({input.size()}),
+                                          marks_t_out));
+    TIndex* d_marks = marks_t_out->flat<TIndex>().data();
+    LaunchMusaMarkFlaggedKernel<T, TIndex>(input.data(), d_marks,
+                                           static_cast<int>(input.size()),
+                                           mstream);
 
-    LaunchIsNonZeroCount<T, TIndex>(input_data, count_device,
-                            static_cast<int>(input.size()), mstream);
+    // 2. Compute the sum of marks (number of true values)
+    Tensor count_wrapper;
+    TF_RETURN_IF_ERROR(ctx->allocate_temp(DataTypeToEnum<TIndex>::value,
+                                          TensorShape({1}), &count_wrapper));
+    mTensor t_marks = CreateMTensor(*marks_t_out);
+    mTensor t_count = CreateMTensor(count_wrapper);
 
-    auto m_err = musaMemcpyAsync(num_true_data, count_device, sizeof(TIndex),
-                                 musaMemcpyDeviceToHost, mstream);
+    // Reduce all dimensions
+    std::vector<int> reduce_dims = {0};
+    int reduce_dim_count = 1;
+
+    TF_RETURN_IF_ERROR(ReduceFunctor::Compute<TIndex>(
+        ctx, &t_count, &t_marks, ::musa::dnn::Reduce::Mode::ADD,
+        reduce_dims.data(), reduce_dim_count,
+        "WhereOp (NumTrue): muDNN ReduceSum failed with status "));
+
+    auto m_err = musaMemcpyAsync(num_true_data, count_wrapper.flat<TIndex>().data(),
+                                 sizeof(TIndex), musaMemcpyDeviceToHost,
+                                 mstream);
     if (m_err != musaSuccess) {
       return errors::Internal("WhereOp: musaMemcpyAsync failed: ",
                               musaGetErrorString(m_err));
@@ -101,7 +114,8 @@ struct Where {
   template <int NDIM, typename T, typename TIndex>
   static Status Compute(OpKernelContext* ctx,
                         typename TTypes<T, NDIM>::ConstTensor input,
-                        typename TTypes<TIndex>::Matrix output) {
+                        typename TTypes<TIndex>::Matrix output,
+                        const Tensor& marks_t) {
     if (output.dimension(0) == 0) {
       return Status::OK();
     }
@@ -109,18 +123,13 @@ struct Where {
     musaStream_t stream = GetMusaStreamByCtx(ctx);
     const int64_t num_items = input.size();
 
-    // 1. Mark matching elements (1 if match, 0 if not)
-    Tensor marks_t;
-    TF_RETURN_IF_ERROR(ctx->allocate_temp(DataTypeToEnum<TIndex>::value,
-                                          TensorShape({num_items}), &marks_t));
-    TIndex* d_marks = marks_t.flat<TIndex>().data();
-    LaunchMusaMarkFlaggedKernel<T, TIndex>(input.data(), d_marks, 
-                                            static_cast<int>(num_items), stream);
+    // 1. Reuse Mark matching elements
+    TIndex* d_marks = const_cast<Tensor&>(marks_t).flat<TIndex>().data();
 
     // 2. Compute Prefix Sum (Inclusive Scan) using muDNN mCum
     Tensor scanned_t;
-    TF_RETURN_IF_ERROR(ctx->allocate_temp(DataTypeToEnum<TIndex>::value,
-                                          TensorShape({num_items}), &scanned_t));
+    TF_RETURN_IF_ERROR(ctx->allocate_temp(
+        DataTypeToEnum<TIndex>::value, TensorShape({num_items}), &scanned_t));
     TIndex* d_scanned = scanned_t.flat<TIndex>().data();
 
     auto& handle = GetHandleByCtx(ctx);
@@ -131,7 +140,7 @@ struct Where {
     cum_op.SetMode(::musa::dnn::Cum::Mode::ADD);
     int dim = 0;
     cum_op.SetDim(dim);
-    
+
     auto* musa_device = static_cast<MusaDevice*>(ctx->device());
     std::list<Tensor> workspace_tensors;
     auto mem_alloc_func =
@@ -152,15 +161,16 @@ struct Where {
     // muDNN CumSum handles the global scan
     mStatus status = cum_op.Run(handle, t_scanned, t_marks, maintainer);
     if (status != mStatus::SUCCESS) {
-      return errors::Internal("WhereOp: muDNN CumSum failed with status ", (int)status);
+      return errors::Internal("WhereOp: muDNN CumSum failed with status ",
+                              (int)status);
     }
 
     // 3. Extract indices based on prefix sum
     Tensor selected_indices_t;
-    TF_RETURN_IF_ERROR(
-        ctx->allocate_temp(DataTypeToEnum<TIndex>::value,
-                           TensorShape({static_cast<int64_t>(output.dimension(0))}),
-                           &selected_indices_t));
+    TF_RETURN_IF_ERROR(ctx->allocate_temp(
+        DataTypeToEnum<TIndex>::value,
+        TensorShape({static_cast<int64_t>(output.dimension(0))}),
+        &selected_indices_t));
     TIndex* selected_indices = selected_indices_t.flat<TIndex>().data();
 
     LaunchMusaSelectFlaggedKernel<T, TIndex>(
