@@ -24,7 +24,7 @@ class MusaWhereOp : public MusaOpKernel {
     if (input.NumElements() < std::numeric_limits<int32_t>::max()) {
       ComputeType<int32_t>(context, input, input_dims);
     } else {
-      // Computesype<int64_t>(context, input, input_dims);
+      ComputeType<int64_t>(context, input, input_dims);
     }
   }
 
@@ -37,16 +37,16 @@ class MusaWhereOp : public MusaOpKernel {
 
     Tensor num_true_tensor;
     OP_REQUIRES_OK(context, context->allocate_temp(
-                                DataTypeToEnum<Tindex>::value, TensorShape({1}),
+                                DataTypeToEnum<int64>::value, TensorShape({1}),
                                 &num_true_tensor, alloc_attr));
-    typename TTypes<Tindex>::UnalignedScalar num_true_t(
-        num_true_tensor.flat<Tindex>().data());
+    typename TTypes<int64>::UnalignedScalar num_true_t(
+        num_true_tensor.flat<int64>().data());
 
     Status s =
-        NumTrue<T, Tindex>::Compute(context, input.flat<T>(), num_true_t);
+        NumTrue<T, int64>::Compute(context, input.flat<T>(), num_true_t);
     OP_REQUIRES_OK(context, s);
 
-    const Tindex num_true = *num_true_tensor.flat<Tindex>().data();
+    const int64 num_true = *num_true_tensor.flat<int64>().data();
 
     Tensor* output = nullptr;
     TensorShape output_shape;
@@ -56,12 +56,14 @@ class MusaWhereOp : public MusaOpKernel {
         context, output_shape.AddDimWithStatus(static_cast<int64>(input_dims)));
     OP_REQUIRES_OK(context, context->allocate_output(0, output_shape, &output));
 
-#define HANDLE_DIM(NDIM)                                              \
-  case NDIM: {                                                        \
-    Status where_status = Where::Compute<NDIM, T, Tindex>(            \
-        context, input.tensor<T, NDIM>(), output->matrix<Tindex>()); \
-    OP_REQUIRES_OK(context, where_status);                            \
-                                                                      \
+    if (num_true == 0) return;
+
+#define HANDLE_DIM(NDIM)                                           \
+  case NDIM: {                                                     \
+    Status where_status = Where::Compute<NDIM, T, int64>(          \
+        context, input.tensor<T, NDIM>(), output->matrix<int64>()); \
+    OP_REQUIRES_OK(context, where_status);                         \
+                                                                   \
   } break
     switch (input_dims) {
       HANDLE_DIM(1);

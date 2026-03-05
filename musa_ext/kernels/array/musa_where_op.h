@@ -49,9 +49,9 @@ struct NumTrue {
     // result into the requested `TIndex` device scalar.
     Tensor count64_wrapper;
     TF_RETURN_IF_ERROR(
-      ctx->allocate_temp(DataTypeToEnum<TIndex>::value, TensorShape({}),
+      ctx->allocate_temp(DataTypeToEnum<TIndex>::value, TensorShape({1}),
                  &count64_wrapper));
-    TIndex* count_device = count64_wrapper.scalar<TIndex>().data();
+    TIndex* count_device = count64_wrapper.flat<TIndex>().data();
 
     LaunchIsNonZeroCount<T, TIndex>(input_data, count_device,
                             static_cast<int>(input.size()), mstream);
@@ -59,7 +59,7 @@ struct NumTrue {
     // Copy lower bytes to the `TIndex` device scalar (truncate if needed).
     MusaMemcpyAsyncD2D(
         reinterpret_cast<void*>(num_true_data),
-        reinterpret_cast<const void*>(count64_wrapper.tensor_data().data()),
+        reinterpret_cast<const void*>(count_device),
         static_cast<size_t>(sizeof(TIndex)), mstream);
 
     return Status::OK();
@@ -98,9 +98,9 @@ struct Where {
     std::size_t temp_storage_bytes = 0;
 
     Tensor found_true_t;
-    TF_RETURN_IF_ERROR(ctx->allocate_temp(DataTypeToEnum<TIndex>::v(),
-                                          TensorShape({}), &found_true_t));
-    TIndex* found_true_device = found_true_t.scalar<TIndex>().data();
+    TF_RETURN_IF_ERROR(ctx->allocate_temp(DataTypeToEnum<TIndex>::value,
+                                          TensorShape({1}), &found_true_t));
+    TIndex* found_true_device = found_true_t.flat<TIndex>().data();
 
     // MUSA path: allocate temporary flat buffer for selected indices and
     // perform a simple selection kernel that writes matching indices into the

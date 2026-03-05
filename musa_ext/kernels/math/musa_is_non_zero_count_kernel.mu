@@ -58,7 +58,7 @@ template <typename T, typename TIndex>
 __global__ void IsNonZeroCountKernel(const T* input, TIndex* output, int n) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < n && IsNonZeroValue<T>(input[idx])) {
-    atomicAdd(output, 1);
+    atomicAdd(reinterpret_cast<unsigned long long*>(output), 1ULL);
   }
 }
 
@@ -88,12 +88,16 @@ REGISTER_IS_NON_ZERO_COUNT(int16, int32);
 REGISTER_IS_NON_ZERO_COUNT(uint8, int32);
 REGISTER_IS_NON_ZERO_COUNT(uint16, int32);
 
-// REGISTER_IS_NON_ZERO_COUNT(float, int64);
-// REGISTER_IS_NON_ZERO_COUNT(double, int64);
-// REGISTER_IS_NON_ZERO_COUNT(Eigen::half, int64);
-// REGISTER_IS_NON_ZERO_COUNT(bfloat16, int64);
-// REGISTER_IS_NON_ZERO_COUNT(int32, int64);
-// REGISTER_IS_NON_ZERO_COUNT(int64, int64);
-// REGISTER_IS_NON_ZERO_COUNT(bool, int64);
+REGISTER_IS_NON_ZERO_COUNT(float, int64);
+REGISTER_IS_NON_ZERO_COUNT(double, int64);
+REGISTER_IS_NON_ZERO_COUNT(Eigen::half, int64);
+REGISTER_IS_NON_ZERO_COUNT(bfloat16, int64);
+REGISTER_IS_NON_ZERO_COUNT(int32, int64);
+REGISTER_IS_NON_ZERO_COUNT(int64, int64);
+REGISTER_IS_NON_ZERO_COUNT(bool, int64);
+REGISTER_IS_NON_ZERO_COUNT(int8, int64);
+REGISTER_IS_NON_ZERO_COUNT(int16, int64);
+REGISTER_IS_NON_ZERO_COUNT(uint8, int64);
+REGISTER_IS_NON_ZERO_COUNT(uint16, int64);
 }  // namespace musa
 }  // namespace tensorflow

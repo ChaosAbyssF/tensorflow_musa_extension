@@ -62,9 +62,10 @@ __global__ void MusaSelectFlaggedKernel(const T* __restrict__ d_flags,
                                         int num_items) {
   const int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < num_items && IsNonZeroValue<T>(d_flags[idx])) {
-    unsigned long long pos = atomicAdd(
-        reinterpret_cast<unsigned long long*>(d_num_selected_out), 1ULL);
-    d_selected_indices[static_cast<int>(pos)] = static_cast<TIndex>(idx);
+    TIndex pos = atomicAdd(reinterpret_cast<unsigned long long*>(d_num_selected_out), 1ULL);
+    if (d_selected_indices) {
+      d_selected_indices[static_cast<TIndex>(pos)] = static_cast<TIndex>(idx);
+    }
   }
 }
 
@@ -159,14 +160,14 @@ INSTANTIATE_PROPAGATE(6, int32);
 INSTANTIATE_PROPAGATE(7, int32);
 INSTANTIATE_PROPAGATE(8, int32);
 
-// INSTANTIATE_PROPAGATE(1, int64);
-// INSTANTIATE_PROPAGATE(2, int64);
-// INSTANTIATE_PROPAGATE(3, int64);
-// INSTANTIATE_PROPAGATE(4, int64);
-// INSTANTIATE_PROPAGATE(5, int64);
-// INSTANTIATE_PROPAGATE(6, int64);
-// INSTANTIATE_PROPAGATE(7, int64);
-// INSTANTIATE_PROPAGATE(8, int64);
+INSTANTIATE_PROPAGATE(1, int64);
+INSTANTIATE_PROPAGATE(2, int64);
+INSTANTIATE_PROPAGATE(3, int64);
+INSTANTIATE_PROPAGATE(4, int64);
+INSTANTIATE_PROPAGATE(5, int64);
+INSTANTIATE_PROPAGATE(6, int64);
+INSTANTIATE_PROPAGATE(7, int64);
+INSTANTIATE_PROPAGATE(8, int64);
 
 #undef INSTANTIATE_PROPAGATE
 
