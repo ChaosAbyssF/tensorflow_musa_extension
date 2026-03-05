@@ -56,6 +56,18 @@ struct NumTrue {
     LaunchIsNonZeroCount<T, TIndex>(input_data, count_device,
                             static_cast<int>(input.size()), mstream);
 
+    auto m_err = musaMemcpyAsync(num_true_data, count_device, sizeof(TIndex),
+                                 musaMemcpyDeviceToHost, mstream);
+    if (m_err != musaSuccess) {
+      return errors::Internal("WhereOp: musaMemcpyAsync failed: ",
+                              musaGetErrorString(m_err));
+    }
+    m_err = musaStreamSynchronize(mstream);
+    if (m_err != musaSuccess) {
+      return errors::Internal("WhereOp: musaStreamSynchronize failed: ",
+                              musaGetErrorString(m_err));
+    }
+
     return Status::OK();
   }
 };
