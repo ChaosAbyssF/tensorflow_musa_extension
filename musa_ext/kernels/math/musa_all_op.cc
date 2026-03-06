@@ -9,7 +9,7 @@
 namespace tensorflow {
 namespace musa {
 
-template <typename T>
+template <typename Tidx>
 class MusaAllOp : public MusaOpKernel {
  public:
   explicit MusaAllOp(OpKernelConstruction* ctx) : MusaOpKernel(ctx) {
@@ -79,7 +79,7 @@ class MusaAllOp : public MusaOpKernel {
 
     OP_REQUIRES_OK(
         context,
-        ReduceFunctor::Compute<T>(
+        ReduceFunctor::Compute<Tidx>(
             context, &mt_output, &mt_input, ::musa::dnn::Reduce::Mode::AND,
             reduce_dims.data(), reduce_dims.size(), "MusaAllOp Run failed: "));
   }
@@ -92,10 +92,16 @@ class MusaAllOp : public MusaOpKernel {
   REGISTER_KERNEL_BUILDER(Name("All")                          \
                               .Device("MUSA")                  \
                               .HostMemory("reduction_indices") \
-                              .TypeConstraint<type>("T"),      \
+                              .TypeConstraint<type>("Tidx"),   \
                           MusaAllOp<type>)
 
 REGISTER_MUSA_ALL_KERNEL(bool);
+REGISTER_MUSA_ALL_KERNEL(int32);
+REGISTER_MUSA_ALL_KERNEL(int64);
+REGISTER_MUSA_ALL_KERNEL(float);
+REGISTER_MUSA_ALL_KERNEL(double);
+REGISTER_MUSA_ALL_KERNEL(bfloat16);
+REGISTER_MUSA_ALL_KERNEL(Eigen::half);
 
 }  // namespace musa
 }  // namespace tensorflow
