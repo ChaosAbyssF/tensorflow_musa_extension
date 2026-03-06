@@ -35,7 +35,7 @@ class ReduceOpsTest(MUSATestCase):
 
     def testMusaBatchMatMul(self):
         """Test MusaBatchMatMulV2 op: [B, M, K] x [B, K, N] -> [B, M, N]."""
-        b, m, k, n = 2, 16, 32, 16
+        b, m, k, n = 4, 32, 64, 32
         for dtype in [tf.float16, tf.bfloat16]:
             x_np = np.random.uniform(-1, 1, size=[b, m, k]).astype(np.float32)
             y_np = np.random.uniform(-1, 1, size=[b, k, n]).astype(np.float32)
@@ -67,7 +67,7 @@ class ReduceOpsTest(MUSATestCase):
 
     def testReduceBmmTest(self):
         """Test ReduceBmmTest op: ([M, K], [1, N]) -> [M, N]."""
-        m, k, n = 8, 16, 4
+        m, k, n = 64, 64, 64
         for dtype in [tf.float16, tf.bfloat16]:
             a_np = np.random.uniform(-1, 1, size=[m, k]).astype(np.float32)
             b_np = np.random.uniform(-1, 1, size=[1, n]).astype(np.float32)
