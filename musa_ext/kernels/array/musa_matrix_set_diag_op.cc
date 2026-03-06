@@ -163,6 +163,8 @@ class MusaMatrixSetDiagOp : public MusaOpKernel {
         left_align_superdiagonal_, left_align_subdiagonal_);
   }
 
+  bool IsExpensive() override { return true; }
+
  private:
   bool left_align_superdiagonal_ = true;
   bool left_align_subdiagonal_ = true;
