@@ -39,33 +39,11 @@ struct ReduceFunctor {
 
     auto status = op.Run(handle, *output, *input, mm);
     if (status != ::musa::dnn::Status::SUCCESS) {
-      return errors::Internal(error_prefix, static_cast<int>(status));
+      return errors::Internal(error_prefix, (int)status);
     }
     return Status::OK();
   }
 };
-
-// Given the fact that bf16 does not work well with reduction, we compute the
-// reduction in fp32 and cast the result back to bf16.
-// This conversion is aligned with tensorflow's convention of promoting bf16 to
-// fp32 for ReduceFunctor.
-template <>
-inline Status ReduceFunctor::Compute<bfloat16>(OpKernelContext* ctx,
-                                        mTensor* output_mt, mTensor* input_mt,
-                                        ::musa::dnn::Reduce::Mode mode,
-                                        const int* reduce_dims,
-                                        int reduce_dim_count,
-                                        const char* error_prefix) {
-  mTensor input_fp32;
-  TF_RETURN_IF_ERROR(CastFunctor(ctx, *input_mt, &input_fp32));
-
-  mTensor output_fp32;
-  TF_RETURN_IF_ERROR(Compute<float>(ctx, &output_fp32, &input_fp32, mode,
-                                    reduce_dims, reduce_dim_count,
-                                    error_prefix));
-
-  return CastFunctor(ctx, output_fp32, output_mt);
-}
 
 }  // namespace musa
 }  // namespace tensorflow
