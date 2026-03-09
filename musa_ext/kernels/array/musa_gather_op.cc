@@ -1,7 +1,3 @@
-#if defined(DEBUG) || defined(_DEBUG) || defined(MUSA_KERNEL_DEBUG)
-#define MUSA_KERNEL_DEBUG_ENABLED
-#endif
-
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -17,57 +13,57 @@ void LaunchGatherV2FloatInt32(const float* params, const int* indices, float* ou
                               int64_t batch_size, int64_t axis_size, int64_t inner_size,
                               int64_t indices_size, int64_t params_stride, int limit,
                               musaStream_t stream);
-void LaunchGatherV2FloatInt64(const float* params, const long long* indices, float* output,
+void LaunchGatherV2FloatInt64(const float* params, const int64_t* indices, float* output,
                               int64_t batch_size, int64_t axis_size, int64_t inner_size,
-                              int64_t indices_size, int64_t params_stride, long long limit,
+                              int64_t indices_size, int64_t params_stride, int64_t limit,
                               musaStream_t stream);
 void LaunchGatherV2DoubleInt32(const double* params, const int* indices, double* output,
                                int64_t batch_size, int64_t axis_size, int64_t inner_size,
                                int64_t indices_size, int64_t params_stride, int limit,
                                musaStream_t stream);
-void LaunchGatherV2DoubleInt64(const double* params, const long long* indices, double* output,
+void LaunchGatherV2DoubleInt64(const double* params, const int64_t* indices, double* output,
                                int64_t batch_size, int64_t axis_size, int64_t inner_size,
-                               int64_t indices_size, int64_t params_stride, long long limit,
+                               int64_t indices_size, int64_t params_stride, int64_t limit,
                                musaStream_t stream);
 void LaunchGatherV2Int32Int32(const int* params, const int* indices, int* output,
                               int64_t batch_size, int64_t axis_size, int64_t inner_size,
                               int64_t indices_size, int64_t params_stride, int limit,
                               musaStream_t stream);
-void LaunchGatherV2Int32Int64(const int* params, const long long* indices, int* output,
+void LaunchGatherV2Int32Int64(const int* params, const int64_t* indices, int* output,
                               int64_t batch_size, int64_t axis_size, int64_t inner_size,
-                              int64_t indices_size, int64_t params_stride, long long limit,
+                              int64_t indices_size, int64_t params_stride, int64_t limit,
                               musaStream_t stream);
-void LaunchGatherV2Int64Int32(const long long* params, const int* indices, long long* output,
+void LaunchGatherV2Int64Int32(const int64_t* params, const int* indices, int64_t* output,
                               int64_t batch_size, int64_t axis_size, int64_t inner_size,
                               int64_t indices_size, int64_t params_stride, int limit,
                               musaStream_t stream);
-void LaunchGatherV2Int64Int64(const long long* params, const long long* indices, long long* output,
+void LaunchGatherV2Int64Int64(const int64_t* params, const int64_t* indices, int64_t* output,
                               int64_t batch_size, int64_t axis_size, int64_t inner_size,
-                              int64_t indices_size, int64_t params_stride, long long limit,
+                              int64_t indices_size, int64_t params_stride, int64_t limit,
                               musaStream_t stream);
 void LaunchGatherV2BoolInt32(const bool* params, const int* indices, bool* output,
                              int64_t batch_size, int64_t axis_size, int64_t inner_size,
                              int64_t indices_size, int64_t params_stride, int limit,
                              musaStream_t stream);
-void LaunchGatherV2BoolInt64(const bool* params, const long long* indices, bool* output,
+void LaunchGatherV2BoolInt64(const bool* params, const int64_t* indices, bool* output,
                              int64_t batch_size, int64_t axis_size, int64_t inner_size,
-                             int64_t indices_size, int64_t params_stride, long long limit,
+                             int64_t indices_size, int64_t params_stride, int64_t limit,
                              musaStream_t stream);
 void LaunchGatherV2HalfInt32(const void* params, const int* indices, void* output,
                              int64_t batch_size, int64_t axis_size, int64_t inner_size,
                              int64_t indices_size, int64_t params_stride, int limit,
                              musaStream_t stream);
-void LaunchGatherV2HalfInt64(const void* params, const long long* indices, void* output,
+void LaunchGatherV2HalfInt64(const void* params, const int64_t* indices, void* output,
                              int64_t batch_size, int64_t axis_size, int64_t inner_size,
-                             int64_t indices_size, int64_t params_stride, long long limit,
+                             int64_t indices_size, int64_t params_stride, int64_t limit,
                              musaStream_t stream);
 void LaunchGatherV2BFloat16Int32(const void* params, const int* indices, void* output,
                                  int64_t batch_size, int64_t axis_size, int64_t inner_size,
                                  int64_t indices_size, int64_t params_stride, int limit,
                                  musaStream_t stream);
-void LaunchGatherV2BFloat16Int64(const void* params, const long long* indices, void* output,
+void LaunchGatherV2BFloat16Int64(const void* params, const int64_t* indices, void* output,
                                  int64_t batch_size, int64_t axis_size, int64_t inner_size,
-                                 int64_t indices_size, int64_t params_stride, long long limit,
+                                 int64_t indices_size, int64_t params_stride, int64_t limit,
                                  musaStream_t stream);
 }
 
@@ -90,8 +86,6 @@ class MusaGatherOp : public MusaOpKernel {
   bool IsExpensive() override { return true; }
 
   void Compute(OpKernelContext* ctx) override {
-    // Debug timing - enabled in Debug build or when MUSA_KERNEL_DEBUG is defined
-    MUSA_KERNEL_TRACE_DETAIL(ctx);
 
     const Tensor& params = ctx->input(0);
     const Tensor& indices = ctx->input(1);

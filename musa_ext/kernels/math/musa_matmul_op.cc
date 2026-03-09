@@ -11,6 +11,7 @@
 #include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/util/matmul_bcast.h"
 #include "../utils_op.h"
+#include "utils/logging.h"
 
 namespace tensorflow {
 namespace musa {
@@ -48,14 +49,6 @@ class MusaMatMulOp : public MusaOpKernel {
     if (ctx->GetAttr("adj_x", &adj_x).ok()) trans_a_ = adj_x;
     if (ctx->GetAttr("adj_y", &adj_y).ok()) trans_b_ = adj_y;
 
-    // PERFORMANCE FIX: TF32 is now ENABLED by default for optimal performance.
-    // TF32 provides ~2x speedup for FP32 matmul with minimal precision loss
-    // (equivalent to FP16 numerical properties).
-    //
-    // To disable TF32 for full FP32 precision, set MUSA_ENABLE_TF32=0
-    //
-    // Expected performance improvement: 50-100% for FP32 matmul operations
-    // which are typically the compute bottleneck in deep learning workloads.
     static bool tf32_enabled_global = []() {
       const char* tf32_env = std::getenv("MUSA_ENABLE_TF32");
       // Default to ENABLED (1) unless explicitly disabled (0)
@@ -72,6 +65,8 @@ class MusaMatMulOp : public MusaOpKernel {
   bool IsExpensive() override { return true; }
 
   void Compute(OpKernelContext* ctx) override {
+    MUSA_KERNEL_TIMING_GUARD(ctx);
+
     const Tensor& in0 = ctx->input(0);
     const Tensor& in1 = ctx->input(1);
 
@@ -100,7 +95,9 @@ class MusaMatMulOp : public MusaOpKernel {
     out_shape.AddDim(n);
 
     Tensor* out = nullptr;
+    MUSA_KERNEL_TRACE_START("Mem Alloc");
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, out_shape, &out));
+    MUSA_KERNEL_TRACE_END("Mem Alloc");
     if (out->NumElements() == 0) return;
 
     auto& handle = GetHandleByCtx(ctx);
@@ -108,14 +105,6 @@ class MusaMatMulOp : public MusaOpKernel {
     mTensor mt_a = CreateMTensor(in0);
     mTensor mt_b = CreateMTensor(in1);
     mTensor mt_out = CreateMTensor(*out);
-
-    auto FixToBatchFormat = [](mTensor& mt, const Tensor& t) {
-      if (t.dims() == 2) {
-        int64_t rows = t.dim_size(0);
-        int64_t cols = t.dim_size(1);
-        mt.SetNdInfo({1, rows, cols}, {rows * cols, cols, 1});
-      }
-    };
 
     ::musa::dnn::Status status;
 
@@ -125,7 +114,9 @@ class MusaMatMulOp : public MusaOpKernel {
       op.SetAlpha(1.0);
       op.SetBeta(0.0);
 
+      MUSA_KERNEL_TRACE_START("Kernel");
       status = op.Run(handle, mt_out, mt_a, mt_b);
+      MUSA_KERNEL_TRACE_END("Kernel");
 
       OP_REQUIRES(
           ctx, status == ::musa::dnn::Status::SUCCESS,
@@ -138,11 +129,45 @@ class MusaMatMulOp : public MusaOpKernel {
       op.SetAlpha(1.0);
       op.SetBeta(0.0);
 
-      FixToBatchFormat(mt_a, in0);
-      FixToBatchFormat(mt_b, in1);
-      FixToBatchFormat(mt_out, *out);
+      
+      int64_t out_batch = bcast.output_batch_shape().num_elements();
 
+      
+      auto ReshapeTo3D = [out_batch](mTensor& mt, const Tensor& t) {
+        int64_t dims = t.dims();
+        int64_t rows = t.dim_size(dims - 2);
+        int64_t cols = t.dim_size(dims - 1);
+        int64_t batch = t.NumElements() / (rows * cols);
+
+        if (dims != 3) {
+          if (batch == 1 && out_batch > 1) {
+            
+            mt.SetNdInfo({out_batch, rows, cols}, {0, cols, 1});
+          } else {
+            
+            mt.SetNdInfo({batch, rows, cols}, {rows * cols, cols, 1});
+          }
+        } else if (dims == 3) {
+          
+          if (batch == 1 && out_batch > 1) {
+            mt.SetNdInfo({out_batch, rows, cols}, {0, cols, 1});
+          }
+        }
+      };
+
+      ReshapeTo3D(mt_a, in0);
+      ReshapeTo3D(mt_b, in1);
+      
+      
+      if (out_shape.dims() > 3) {
+         mt_out.SetNdInfo({out_batch, m, n}, {m * n, n, 1});
+      } else if (out_shape.dims() == 2) {
+         mt_out.SetNdInfo({1, m, n}, {m * n, n, 1});
+      }
+
+      MUSA_KERNEL_TRACE_START("Kernel");
       status = op.Run(handle, mt_out, mt_a, mt_b);
+      MUSA_KERNEL_TRACE_END("Kernel");
 
       OP_REQUIRES(
           ctx, status == ::musa::dnn::Status::SUCCESS,

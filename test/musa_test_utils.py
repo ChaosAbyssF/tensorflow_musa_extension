@@ -15,8 +15,14 @@
 
 """Utilities for MUSA kernel tests."""
 
+import logging
 import os
-import tensorflow as tf
+import warnings
+
+# Suppress TensorFlow tf.function retracing warnings that occur in control flow tests.
+# These warnings are expected when @tf.function is called with different Python arguments
+# in loops, and don't affect test correctness.
+logging.getLogger('tensorflow').setLevel(logging.ERROR)
 
 
 def load_musa_plugin():
@@ -59,16 +65,22 @@ def load_musa_plugin():
     )
 
 
+# Import tensorflow first (load_musa_plugin needs it)
+import tensorflow as tf
+
+# Load plugin immediately after importing tensorflow
+load_musa_plugin()
+
+
 class MUSATestCase(tf.test.TestCase):
   """Base test class for MUSA kernel tests."""
 
   @classmethod
   def setUpClass(cls):
-    """Set up the test class by loading the MUSA plugin."""
+    """Set up the test class."""
     super(MUSATestCase, cls).setUpClass()
-    load_musa_plugin()
 
-    # Verify MUSA device is available
+    # Verify MUSA device is available (plugin already loaded at module import)
     if not tf.config.list_physical_devices('MUSA'):
       raise RuntimeError("No MUSA devices found.")
 
@@ -111,11 +123,29 @@ class MUSATestCase(tf.test.TestCase):
     This overrides the parent class method to provide more concise error messages.
 
     Args:
-      a, b: Arrays to compare
+      a, b: Arrays to compare (can be numpy arrays or TensorFlow tensors)
       rtol, atol: Relative and absolute tolerance
       max_diffs_to_show: Maximum number of differing elements to show
     """
     import numpy as np
+    import tensorflow as tf
+
+    # Convert TensorFlow tensors to numpy arrays
+    if hasattr(a, 'numpy'):
+      a = a.numpy()
+    if hasattr(b, 'numpy'):
+      b = b.numpy()
+
+    # Handle bfloat16 by converting to float32 for comparison
+    # bfloat16 is not a standard numpy type
+    if hasattr(a, 'dtype') and a.dtype == tf.bfloat16.as_numpy_dtype:
+      a = a.astype(np.float32) if hasattr(a, 'astype') else np.array(a, dtype=np.float32)
+    if hasattr(b, 'dtype') and b.dtype == tf.bfloat16.as_numpy_dtype:
+      b = b.astype(np.float32) if hasattr(b, 'astype') else np.array(b, dtype=np.float32)
+
+    # Ensure both are numpy arrays
+    a = np.array(a)
+    b = np.array(b)
 
     # Use numpy's allclose for the actual comparison
     if np.allclose(a, b, rtol=rtol, atol=atol):
