@@ -20,7 +20,12 @@ class MusaWhereOp : public MusaOpKernel {
   void Compute(OpKernelContext* context) override {
     const Tensor& input = context->input(0);
     const int input_dims = input.dims();
-    if (input.NumElements() == 0) return;
+    if (input.NumElements() == 0) {
+      Tensor* out = nullptr;
+      OP_REQUIRES_OK(
+          context, context->allocate_output(0, TensorShape({0, input_dims}), &out));
+      return;
+    }
 
     if (input.NumElements() < std::numeric_limits<int32_t>::max()) {
       ComputeType<int32_t>(context, input, input_dims);
@@ -49,7 +54,12 @@ class MusaWhereOp : public MusaOpKernel {
     OP_REQUIRES_OK(context, s);
 
     const int64 num_true = *num_true_tensor.flat<int64>().data();
-    if (num_true == 0) return;
+    if (num_true == 0) {
+      Tensor* out = nullptr;
+      OP_REQUIRES_OK(
+          context, context->allocate_output(0, TensorShape({0, input_dims}), &out));
+      return;
+    }
 
     // Next is to compute `where`, given the number of true elements.
     Tensor* output = nullptr;
@@ -68,6 +78,8 @@ class MusaWhereOp : public MusaOpKernel {
                                                                     \
   } break
     switch (input_dims) {
+      case 0:
+        break; // For a scalar input, output shape is [num_true, 0]. No coordinates to write.
       HANDLE_DIM(1);
       HANDLE_DIM(2);
       HANDLE_DIM(3);

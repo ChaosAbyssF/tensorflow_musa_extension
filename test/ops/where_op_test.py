@@ -42,7 +42,17 @@ class WhereOpTest(MUSATestCase):
         musa_result = tf.cast(musa_result, tf.float32)
 
       self.assertAllClose(cpu_result.numpy(), musa_result.numpy(), rtol=rtol, atol=atol)
-
+      
+  def testWhereScalar(self):
+    """测试 Condition 是 0-D 标量的情况"""
+    self._compare_cpu_musa(tf.constant(True))
+    self._compare_cpu_musa(tf.constant(False))
+      
+  def testWhereAllFalse(self):
+    """测试没有任何 True 命中的情况"""
+    condition = tf.constant([False, False, False, False])
+    self._compare_cpu_musa(condition)
+    
   def testWhereIndices(self):
     """Test tf.where(condition) which returns coordinates of True values."""
     # 1D
@@ -106,11 +116,45 @@ class WhereOpTest(MUSATestCase):
     y = tf.constant([[7, 8, 9], [10, 11, 12]], dtype=tf.float32)
     # Note: tf.where supports limited broadcasting
     self._compare_cpu_musa(condition, x, y)
+    
+  def testWhereSelectBroadcastingAdvanced(self):
+    """测试更完整的 Broadcasting 机制."""
+    # condition为矩阵，x, y 为标量
+    condition = tf.constant([[True, False], [False, True]])
+    self._compare_cpu_musa(condition, tf.constant(1.0), tf.constant(0.0), dtype=tf.float32)
+  
+    # condition为标量，x, y 为矩阵
+    condition_scalar = tf.constant(True)
+    x_tensor = tf.constant([[1, 2], [3, 4]], dtype=tf.float32)
+    y_tensor = tf.constant([[5, 6], [7, 8]], dtype=tf.float32)
+    self._compare_cpu_musa(condition_scalar, x_tensor, y_tensor, dtype=tf.float32)
 
   def testWhereEmpty(self):
     """Test where with empty inputs."""
     condition = tf.constant([], dtype=tf.bool)
     self._compare_cpu_musa(condition)
+
+  def testWhereAllFalse(self):
+    """Test where with no True elements."""
+    condition = tf.constant([False, False, False, False])
+    self._compare_cpu_musa(condition)
+
+  def testWhereScalar(self):
+    """Test where with 0-D scalar inputs for SelectV2."""
+    self._compare_cpu_musa(tf.constant(True), tf.constant(1), tf.constant(0), dtype=tf.int32)
+    self._compare_cpu_musa(tf.constant(False), tf.constant(1.0), tf.constant(0.0), dtype=tf.float32)
+
+  def testWhereSelectBroadcastingAdvanced(self):
+    """Test tf.where(condition, x, y) with more complex broadcasting."""
+    # Condition is 2D matrix, x and y are scalars
+    condition = tf.constant([[True, False], [False, True]])
+    self._compare_cpu_musa(condition, tf.constant(1.0), tf.constant(0.0), dtype=tf.float32)
+
+    # Condition is scalar, x and y are matrices
+    condition_scalar = tf.constant(True)
+    x_tensor = tf.constant([[1, 2], [3, 4]], dtype=tf.float32)
+    y_tensor = tf.constant([[5, 6], [7, 8]], dtype=tf.float32)
+    self._compare_cpu_musa(condition_scalar, x_tensor, y_tensor, dtype=tf.float32)
 
 
 if __name__ == "__main__":
