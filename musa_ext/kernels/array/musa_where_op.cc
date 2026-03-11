@@ -21,6 +21,7 @@ class MusaWhereOp : public MusaOpKernel {
     const Tensor& input = context->input(0);
     const int input_dims = input.dims();
     if (input.NumElements() == 0) {
+      // Handle the case where there are no elements in the input tensor.
       Tensor* out = nullptr;
       OP_REQUIRES_OK(
           context, context->allocate_output(0, TensorShape({0, input_dims}), &out));
