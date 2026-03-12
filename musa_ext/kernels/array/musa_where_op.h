@@ -2,13 +2,13 @@
 #define TENSORFLOW_MUSA_KERNELS_ARRAY_MUSA_WHERE_OP_H_
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <type_traits>
 
 #include "../math/musa_reduce_functor.h"
 #include "../utils_op.h"
 #include "mu/device/musa_memcpy.h"
-#include "tensorflow/core/kernels/gpu_prim.h"
 #include "tensorflow/core/util/gpu_kernel_helper.h"
 
 namespace tensorflow {
@@ -16,17 +16,32 @@ namespace musa {
 
 // Count Non Zero within the input tensor
 template <typename T, typename TIndex>
+size_t GetIsNonZeroCountWorkspaceSize(const T* input, TIndex* output, int n,
+                                      musaStream_t stream);
+
+template <typename T, typename TIndex>
 void LaunchIsNonZeroCount(const T* input, TIndex* output, int n,
+                          void* temp_storage, size_t temp_storage_bytes,
                           musaStream_t stream);
 
 template <typename T, typename TIndex>
-void LaunchMusaMarkFlaggedKernel(const T* input, TIndex* d_marks, int num_items,
-                                 musaStream_t stream);
+size_t GetSelectTrueIndicesWorkspaceSize(const T* input, TIndex* output_indices,
+                                         TIndex* num_selected, int num_items,
+                                         musaStream_t stream);
+
+template <typename T, typename TIndex>
+void LaunchSelectTrueIndicesKernel(const T* input, TIndex* output_indices,
+                                   TIndex* num_selected, int num_items,
+                                   void* temp_storage,
+                                   size_t temp_storage_bytes,
+                                   musaStream_t stream);
 
 template <int NDIM, typename TIndex>
-void LaunchScatterAndPropagateWhereIndicesKernel(
-    const TIndex* d_marks, const TIndex* d_scanned, TIndex* output,
-    const TIndex* strides_host, int num_items, musaStream_t stream);
+void LaunchPropagateWhereIndicesFromFlatKernel(const TIndex* flat_indices,
+                         TIndex* output,
+                         const TIndex* strides_host,
+                         int num_selected,
+                         musaStream_t stream);
 
 template <typename T, typename TIndex>
 struct NumTrue {
@@ -42,16 +57,29 @@ struct NumTrue {
       return Status::OK();
     }
 
-    // Use the new LaunchIsNonZeroCount operator which directly counts
-    // non-zero values into a 64-bit device scalar, then copy/truncate the
-    // result into the requested `TIndex` device scalar.
     Tensor count64_wrapper;
     TF_RETURN_IF_ERROR(ctx->allocate_temp(DataTypeToEnum<TIndex>::value,
                                           TensorShape({1}), &count64_wrapper));
     TIndex* count_device = count64_wrapper.flat<TIndex>().data();
 
+    const size_t count_workspace_bytes =
+      GetIsNonZeroCountWorkspaceSize<T, TIndex>(
+        input_data, count_device, static_cast<int>(input.size()), mstream);
+    Tensor count_workspace_t;
+    void* count_workspace_ptr = nullptr;
+    if (count_workspace_bytes > 0) {
+      TF_RETURN_IF_ERROR(ctx->allocate_temp(
+        DT_UINT8,
+        TensorShape({static_cast<int64_t>(count_workspace_bytes)}),
+        &count_workspace_t));
+      count_workspace_ptr =
+        static_cast<void*>(count_workspace_t.flat<uint8_t>().data());
+    }
+
     LaunchIsNonZeroCount<T, TIndex>(input_data, count_device,
-                                    static_cast<int>(input.size()), mstream);
+                    static_cast<int>(input.size()),
+                    count_workspace_ptr,
+                    count_workspace_bytes, mstream);
 
     auto m_err = musaMemcpyAsync(num_true_data, count_device, sizeof(TIndex),
                                  musaMemcpyDeviceToHost, mstream);
@@ -100,59 +128,42 @@ struct Where {
     musaStream_t stream = GetMusaStreamByCtx(ctx);
     const int64_t num_items = input.size();
 
-    // Turn the inputted tensor into 0/1 flags (element-wise).
-    Tensor marks_t;
-    TF_RETURN_IF_ERROR(ctx->allocate_temp(DataTypeToEnum<TIndex>::value,
-                                          TensorShape({num_items}), &marks_t));
-    TIndex* d_marks = marks_t.flat<TIndex>().data();
-    LaunchMusaMarkFlaggedKernel<T, TIndex>(input.data(), d_marks,
-                                           static_cast<int>(num_items), stream);
-
-    // Compute Prefix Sum using muDNN mCum
-    Tensor scanned_t;
+    Tensor flat_indices_t;
     TF_RETURN_IF_ERROR(ctx->allocate_temp(
-        DataTypeToEnum<TIndex>::value, TensorShape({num_items}), &scanned_t));
-    TIndex* d_scanned = scanned_t.flat<TIndex>().data();
+      DataTypeToEnum<TIndex>::value, TensorShape({output.dimension(0)}),
+      &flat_indices_t));
+    TIndex* d_flat_indices = flat_indices_t.flat<TIndex>().data();
 
-    auto& handle = GetHandleByCtx(ctx);
-    mTensor t_marks = CreateMTensor(marks_t);
-    mTensor t_scanned = CreateMTensor(scanned_t);
-    mCum cum_op;
-    // Set mode: Sum, Dimension: 0
-    cum_op.SetMode(::musa::dnn::Cum::Mode::ADD);
-    int dim = 0;
-    cum_op.SetDim(dim);
+    Tensor selected_count_t;
+    TF_RETURN_IF_ERROR(ctx->allocate_temp(DataTypeToEnum<TIndex>::value,
+                        TensorShape({1}), &selected_count_t));
+    TIndex* d_num_selected = selected_count_t.flat<TIndex>().data();
 
-    auto* musa_device = static_cast<MusaDevice*>(ctx->device());
-    std::list<Tensor> workspace_tensors;
-    auto mem_alloc_func =
-        [ctx, &workspace_tensors](size_t size) -> ::musa::dnn::MemoryHandler {
-      workspace_tensors.emplace_back();
-      Tensor& temp = workspace_tensors.back();
-
-      Status s = ctx->allocate_temp(
-          DT_UINT8, TensorShape({static_cast<int64_t>(size)}), &temp);
-      if (!s.ok()) return nullptr;
-
-      void* raw_ptr = static_cast<void*>(temp.flat<uint8_t>().data());
-      return ::musa::dnn::MemoryHandler(raw_ptr, [](void* p) {});
-    };
-    ::musa::dnn::MemoryMaintainer maintainer =
-        musa_device->GetMemMaintainer(mem_alloc_func);
-
-    // MuDNN CumSum handles the global scan
-    mStatus status = cum_op.Run(handle, t_scanned, t_marks, maintainer);
-    if (status != mStatus::SUCCESS) {
-      return errors::Internal("WhereOp: muDNN CumSum failed with status ",
-                              (int)status);
+    const size_t select_workspace_bytes =
+        GetSelectTrueIndicesWorkspaceSize<T, TIndex>(
+            input.data(), d_flat_indices, d_num_selected,
+            static_cast<int>(num_items), stream);
+    Tensor select_workspace_t;
+    void* select_workspace_ptr = nullptr;
+    if (select_workspace_bytes > 0) {
+      TF_RETURN_IF_ERROR(ctx->allocate_temp(
+          DT_UINT8,
+          TensorShape({static_cast<int64_t>(select_workspace_bytes)}),
+          &select_workspace_t));
+      select_workspace_ptr =
+          static_cast<void*>(select_workspace_t.flat<uint8_t>().data());
     }
+
+    LaunchSelectTrueIndicesKernel<T, TIndex>(
+      input.data(), d_flat_indices, d_num_selected,
+      static_cast<int>(num_items), select_workspace_ptr,
+      select_workspace_bytes, stream);
 
     const Eigen::array<TIndex, NDIM> strides =
         CalculateStrides<TIndex, T, NDIM>(input);
-    const TIndex output_rows = output.dimension(0);
-    LaunchScatterAndPropagateWhereIndicesKernel<NDIM, TIndex>(
-        d_marks, d_scanned, output.data(), strides.data(),
-        static_cast<int>(num_items), stream);
+    LaunchPropagateWhereIndicesFromFlatKernel<NDIM, TIndex>(
+      d_flat_indices, output.data(), strides.data(),
+      static_cast<int>(output.dimension(0)), stream);
 
     return Status::OK();
   }

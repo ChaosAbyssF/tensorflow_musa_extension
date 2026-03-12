@@ -3,6 +3,8 @@
 
 #include <cstdint>
 
+#include <cub/cub.cuh>
+
 #include "tensorflow/core/framework/bfloat16.h"
 #include "tensorflow/core/framework/tensor_types.h"
 #include "tensorflow/core/platform/types.h"
@@ -32,6 +34,20 @@ __device__ __forceinline__ bool IsNonZeroValue(const T& v) {
   return v != static_cast<T>(0);
 }
 
+template <typename TIndex>
+__device__ __forceinline__ TIndex AtomicAddOne(TIndex* addr);
+
+template <>
+__device__ __forceinline__ int32 AtomicAddOne<int32>(int32* addr) {
+  return atomicAdd(addr, 1);
+}
+
+template <>
+__device__ __forceinline__ int64 AtomicAddOne<int64>(int64* addr) {
+  return static_cast<int64>(
+      atomicAdd(reinterpret_cast<unsigned long long*>(addr), 1ULL));
+}
+
 template <>
 __device__ __forceinline__ bool IsNonZeroValue<float>(const float& v) {
   return v != 0.0f;
@@ -56,28 +72,79 @@ __device__ __forceinline__ bool IsNonZeroValue<bfloat16>(const bfloat16& v) {
 }
 
 template <typename T, typename TIndex>
-__global__ void MusaMarkFlaggedKernel(const T* __restrict__ d_flags,
-                                      TIndex* d_marks, int num_items) {
+struct NonZeroFlagOp {
+  __device__ __forceinline__ bool operator()(const T& v) const {
+    return IsNonZeroValue<T>(v);
+  }
+};
+
+template <typename T, typename TIndex>
+__global__ void SelectTrueIndicesFallbackKernel(const T* __restrict__ input,
+                                                TIndex* __restrict__ out,
+                                                TIndex* __restrict__ counter,
+                                                int num_items) {
   const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < num_items) {
-    d_marks[idx] = IsNonZeroValue<T>(d_flags[idx]) ? 1 : 0;
+  if (idx < num_items && IsNonZeroValue<T>(input[idx])) {
+    TIndex pos = AtomicAddOne<TIndex>(counter);
+    out[pos] = static_cast<TIndex>(idx);
   }
 }
 
-// Wrapper to launch Mark kernel separately since muDNN needs to be in .h/.cc
 template <typename T, typename TIndex>
-void LaunchMusaMarkFlaggedKernel(const T* input, TIndex* d_marks, int num_items,
-                                 musaStream_t stream) {
+size_t GetSelectTrueIndicesWorkspaceSize(const T* input, TIndex* output_indices,
+                                         TIndex* num_selected, int num_items,
+                                         musaStream_t stream) {
+  if (num_items <= 0) return 0;
+
+  cub::CountingInputIterator<TIndex> counting_iter(0);
+  cub::TransformInputIterator<bool, NonZeroFlagOp<T, TIndex>, const T*>
+      flag_iter(input, NonZeroFlagOp<T, TIndex>());
+
+  size_t temp_bytes = 0;
+  musaError_t st = cub::DeviceSelect::Flagged(
+      nullptr, temp_bytes, counting_iter, flag_iter, output_indices,
+      num_selected, num_items, stream);
+  return st == musaSuccess ? temp_bytes : 0;
+}
+
+template <typename T, typename TIndex>
+void LaunchSelectTrueIndicesKernel(const T* input, TIndex* output_indices,
+                                   TIndex* num_selected, int num_items,
+                                   void* temp_storage,
+                                   size_t temp_storage_bytes,
+                                   musaStream_t stream) {
+  musaMemsetAsync(num_selected, 0, sizeof(TIndex), stream);
   if (num_items <= 0) return;
+
+  cub::CountingInputIterator<TIndex> counting_iter(0);
+  cub::TransformInputIterator<bool, NonZeroFlagOp<T, TIndex>, const T*>
+      flag_iter(input, NonZeroFlagOp<T, TIndex>());
+
+  if (temp_storage != nullptr && temp_storage_bytes > 0) {
+    musaError_t st = cub::DeviceSelect::Flagged(
+        temp_storage, temp_storage_bytes, counting_iter, flag_iter,
+        output_indices, num_selected, num_items, stream);
+    if (st == musaSuccess) {
+      return;
+    }
+  }
+
   const int threads = 256;
   const int blocks = (num_items + threads - 1) / threads;
-  MusaMarkFlaggedKernel<T, TIndex>
-      <<<blocks, threads, 0, stream>>>(input, d_marks, num_items);
+  SelectTrueIndicesFallbackKernel<T, TIndex>
+      <<<blocks, threads, 0, stream>>>(input, output_indices, num_selected,
+                                       num_items);
 }
 
 #define INSTANTIATE_SELECT_FLAGGED(T, TINDEX)                            \
-  template void LaunchMusaMarkFlaggedKernel<T, TINDEX>(                  \
-      const T* input, TINDEX* d_marks, int num_items, musaStream_t stream)
+  template size_t GetSelectTrueIndicesWorkspaceSize<T, TINDEX>(           \
+      const T* input, TINDEX* output_indices, TINDEX* num_selected,       \
+      int num_items, musaStream_t stream);                                \
+                                                                          \
+  template void LaunchSelectTrueIndicesKernel<T, TINDEX>(                \
+      const T* input, TINDEX* output_indices, TINDEX* num_selected,      \
+      int num_items, void* temp_storage, size_t temp_storage_bytes,      \
+      musaStream_t stream)
 
 #define INSTANTIATE_SELECT_FLAGGED_ALL(T) \
   INSTANTIATE_SELECT_FLAGGED(T, int32_t); \
@@ -104,16 +171,12 @@ struct StridesPack {
 };
 
 template <int NDIM, typename TIndex>
-__global__ void ScatterAndPropagateWhereIndicesKernel(
-    const TIndex* __restrict__ d_marks, const TIndex* __restrict__ d_scanned,
-    TIndex* __restrict__ output, const StridesPack<NDIM, TIndex> strides,
-    int num_items) {
-  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < num_items && d_marks[idx] == 1) {
-    // d_scanned is inclusive sum from muDNN CumSum, so (sum - 1) is the
-    // zero-based index
-    TIndex pos = d_scanned[idx] - 1;
-    TIndex index_value = static_cast<TIndex>(idx);
+__global__ void PropagateWhereIndicesFromFlatKernel(
+    const TIndex* __restrict__ flat_indices, TIndex* __restrict__ output,
+    const StridesPack<NDIM, TIndex> strides, int num_selected) {
+  const int pos = blockIdx.x * blockDim.x + threadIdx.x;
+  if (pos < num_selected) {
+    TIndex index_value = flat_indices[pos];
 #pragma unroll
     for (int c = 0; c < NDIM; ++c) {
       const TIndex stride = strides.v[c];
@@ -124,10 +187,12 @@ __global__ void ScatterAndPropagateWhereIndicesKernel(
 }
 
 template <int NDIM, typename TIndex>
-void LaunchScatterAndPropagateWhereIndicesKernel(
-    const TIndex* d_marks, const TIndex* d_scanned, TIndex* output,
-    const TIndex* strides_host, int num_items, musaStream_t stream) {
-  if (num_items <= 0) {
+void LaunchPropagateWhereIndicesFromFlatKernel(const TIndex* flat_indices,
+                                               TIndex* output,
+                                               const TIndex* strides_host,
+                                               int num_selected,
+                                               musaStream_t stream) {
+  if (num_selected <= 0) {
     return;
   }
 
@@ -138,34 +203,29 @@ void LaunchScatterAndPropagateWhereIndicesKernel(
   }
 
   const int threads = 256;
-  const int blocks = (num_items + threads - 1) / threads;
-  ScatterAndPropagateWhereIndicesKernel<NDIM, TIndex>
-      <<<blocks, threads, 0, stream>>>(d_marks, d_scanned, output, pack,
-                                       num_items);
+  const int blocks = (num_selected + threads - 1) / threads;
+  PropagateWhereIndicesFromFlatKernel<NDIM, TIndex>
+      <<<blocks, threads, 0, stream>>>(flat_indices, output, pack,
+                                       num_selected);
 }
 
 #define INSTANTIATE_PROPAGATE(NDIM, TINDEX)                            \
-  template void LaunchScatterAndPropagateWhereIndicesKernel<NDIM, TINDEX>( \
-      const TINDEX* d_marks, const TINDEX* d_scanned, TINDEX* output,      \
-      const TINDEX* strides_host, int num_items, musaStream_t stream)
+  template void LaunchPropagateWhereIndicesFromFlatKernel<NDIM, TINDEX>(    \
+      const TINDEX* flat_indices, TINDEX* output, const TINDEX* strides_host, \
+      int num_selected, musaStream_t stream)
 
-INSTANTIATE_PROPAGATE(1, int32);
-INSTANTIATE_PROPAGATE(2, int32);
-INSTANTIATE_PROPAGATE(3, int32);
-INSTANTIATE_PROPAGATE(4, int32);
-INSTANTIATE_PROPAGATE(5, int32);
-INSTANTIATE_PROPAGATE(6, int32);
-INSTANTIATE_PROPAGATE(7, int32);
-INSTANTIATE_PROPAGATE(8, int32);
+#define INSTANTIATE_PROPAGATE_ALL(NDIM) \
+  INSTANTIATE_PROPAGATE(NDIM, int32); \
+  INSTANTIATE_PROPAGATE(NDIM, int64)
 
-INSTANTIATE_PROPAGATE(1, int64);
-INSTANTIATE_PROPAGATE(2, int64);
-INSTANTIATE_PROPAGATE(3, int64);
-INSTANTIATE_PROPAGATE(4, int64);
-INSTANTIATE_PROPAGATE(5, int64);
-INSTANTIATE_PROPAGATE(6, int64);
-INSTANTIATE_PROPAGATE(7, int64);
-INSTANTIATE_PROPAGATE(8, int64);
+INSTANTIATE_PROPAGATE_ALL(1);
+INSTANTIATE_PROPAGATE_ALL(2);
+INSTANTIATE_PROPAGATE_ALL(3);
+INSTANTIATE_PROPAGATE_ALL(4);
+INSTANTIATE_PROPAGATE_ALL(5);
+INSTANTIATE_PROPAGATE_ALL(6);
+INSTANTIATE_PROPAGATE_ALL(7);
+INSTANTIATE_PROPAGATE_ALL(8);
 
 #undef INSTANTIATE_PROPAGATE
 
