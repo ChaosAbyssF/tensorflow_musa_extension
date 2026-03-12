@@ -1,6 +1,5 @@
 #include "musa_where_op.h"
 
-#include <limits>
 #include <utility>
 
 #include "../utils_op.h"
@@ -28,14 +27,9 @@ class MusaWhereOp : public MusaOpKernel {
       return;
     }
 
-    if (input.NumElements() < std::numeric_limits<int32_t>::max()) {
-      ComputeType<int32_t>(context, input, input_dims);
-    } else {
-      ComputeType<int64_t>(context, input, input_dims);
-    }
+    ComputeType(context, input, input_dims);
   }
 
-  template <typename Tindex>
   void ComputeType(OpKernelContext* context, const Tensor& input,
                    int input_dims) {
     AllocatorAttributes alloc_attr;

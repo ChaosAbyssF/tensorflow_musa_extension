@@ -105,7 +105,6 @@ template <typename T, typename TIndex>
 void LaunchIsNonZeroCount(const T* input, TIndex* output, int n,
                           void* temp_storage, size_t temp_storage_bytes,
                           musaStream_t stream) {
-  musaMemsetAsync(output, 0, sizeof(TIndex), stream);
   if (n <= 0) return;
 
   cub::TransformInputIterator<TIndex, NonZeroToCountOp<T, TIndex>, const T*>
@@ -119,6 +118,9 @@ void LaunchIsNonZeroCount(const T* input, TIndex* output, int n,
       return;
     }
   }
+
+  // Output counter must be reset before the atomic fallback path.
+  musaMemsetAsync(output, 0, sizeof(TIndex), stream);
 
   int threads = 256;
   int blocks = (n + threads - 1) / threads;

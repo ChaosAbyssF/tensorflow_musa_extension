@@ -113,7 +113,6 @@ void LaunchSelectTrueIndicesKernel(const T* input, TIndex* output_indices,
                                    void* temp_storage,
                                    size_t temp_storage_bytes,
                                    musaStream_t stream) {
-  musaMemsetAsync(num_selected, 0, sizeof(TIndex), stream);
   if (num_items <= 0) return;
 
   cub::CountingInputIterator<TIndex> counting_iter(0);
@@ -128,6 +127,9 @@ void LaunchSelectTrueIndicesKernel(const T* input, TIndex* output_indices,
       return;
     }
   }
+
+  // Counter is only required for the fallback path.
+  musaMemsetAsync(num_selected, 0, sizeof(TIndex), stream);
 
   const int threads = 256;
   const int blocks = (num_items + threads - 1) / threads;
