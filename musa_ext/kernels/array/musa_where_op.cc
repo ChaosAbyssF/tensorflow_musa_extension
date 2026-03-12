@@ -32,21 +32,63 @@ class MusaWhereOp : public MusaOpKernel {
 
   void ComputeType(OpKernelContext* context, const Tensor& input,
                    int input_dims) {
+    musaStream_t stream = GetMusaStreamByCtx(context);
+    const int64 num_items = input.NumElements();
+
+    Tensor flat_indices_t;
+    OP_REQUIRES_OK(
+      context,
+      context->allocate_temp(DataTypeToEnum<int64>::value,
+                   TensorShape({num_items}), &flat_indices_t));
+    int64* d_flat_indices = flat_indices_t.flat<int64>().data();
+
+    Tensor selected_count_t;
+    OP_REQUIRES_OK(context,
+             context->allocate_temp(DataTypeToEnum<int64>::value,
+                        TensorShape({1}), &selected_count_t));
+    int64* d_num_selected = selected_count_t.flat<int64>().data();
+
+    const size_t select_workspace_bytes =
+      GetSelectTrueIndicesWorkspaceSize<T, int64>(
+        input.flat<T>().data(), d_flat_indices, d_num_selected,
+        static_cast<int>(num_items), stream);
+    Tensor select_workspace_t;
+    void* select_workspace_ptr = nullptr;
+    if (select_workspace_bytes > 0) {
+      OP_REQUIRES_OK(context,
+             context->allocate_temp(
+               DT_UINT8,
+               TensorShape({static_cast<int64>(select_workspace_bytes)}),
+               &select_workspace_t));
+      select_workspace_ptr =
+        static_cast<void*>(select_workspace_t.flat<uint8_t>().data());
+    }
+
+    LaunchSelectTrueIndicesKernel<T, int64>(
+      input.flat<T>().data(), d_flat_indices, d_num_selected,
+      static_cast<int>(num_items), select_workspace_ptr,
+      select_workspace_bytes, stream);
+
     AllocatorAttributes alloc_attr;
     alloc_attr.set_on_host(true);
     alloc_attr.set_gpu_compatible(true);
 
-    // We first need to count the number of true elements in the input tensor,
-    // which will determine the output shape.
+    // Copy selected row count from device for output shape inference.
     Tensor num_true_tensor;
     OP_REQUIRES_OK(context, context->allocate_temp(
                                 DataTypeToEnum<int64>::value, TensorShape({1}),
                                 &num_true_tensor, alloc_attr));
-    typename TTypes<int64>::UnalignedScalar num_true_t(
-        num_true_tensor.flat<int64>().data());
 
-    Status s = NumTrue<T, int64>::Compute(context, input.flat<T>(), num_true_t);
-    OP_REQUIRES_OK(context, s);
+    auto m_err = musaMemcpyAsync(num_true_tensor.flat<int64>().data(),
+                   d_num_selected, sizeof(int64),
+                   musaMemcpyDeviceToHost, stream);
+    OP_REQUIRES(context, m_err == musaSuccess,
+          errors::Internal("WhereOp: musaMemcpyAsync failed: ",
+                   musaGetErrorString(m_err)));
+    m_err = musaStreamSynchronize(stream);
+    OP_REQUIRES(context, m_err == musaSuccess,
+          errors::Internal("WhereOp: musaStreamSynchronize failed: ",
+                   musaGetErrorString(m_err)));
 
     const int64 num_true = *num_true_tensor.flat<int64>().data();
     if (num_true == 0) {
@@ -67,8 +109,9 @@ class MusaWhereOp : public MusaOpKernel {
 
 #define HANDLE_DIM(NDIM)                                            \
   case NDIM: {                                                      \
-    Status where_status = Where::Compute<NDIM, T, int64>(           \
-        context, input.tensor<T, NDIM>(), output->matrix<int64>()); \
+    Status where_status = Where::PropagateFromSelectedIndices<NDIM, T, int64>( \
+        context, input.tensor<T, NDIM>(), d_flat_indices, num_true,             \
+        output->matrix<int64>());                                                \
     OP_REQUIRES_OK(context, where_status);                          \
                                                                     \
   } break
