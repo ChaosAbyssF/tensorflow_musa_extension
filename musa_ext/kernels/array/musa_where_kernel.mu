@@ -64,38 +64,6 @@ __global__ void MusaMarkFlaggedKernel(const T* __restrict__ d_flags,
   }
 }
 
-template <typename TIndex>
-__global__ void MusaScatterIndicesKernel(const TIndex* __restrict__ d_marks,
-                                         const TIndex* __restrict__ d_scanned,
-                                         TIndex* d_selected_indices,
-                                         int num_items) {
-  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
-  if (idx < num_items && d_marks[idx] == 1) {
-    // d_scanned is inclusive sum from muDNN CumSum, so (sum - 1) is the
-    // zero-based index
-    TIndex pos = d_scanned[idx] - 1;
-    if (d_selected_indices) {
-      d_selected_indices[static_cast<TIndex>(pos)] = static_cast<TIndex>(idx);
-    }
-  }
-}
-
-template <typename T, typename TIndex>
-void LaunchMusaSelectFlaggedKernel(const T* input, TIndex* selected_indices,
-                                   const TIndex* d_scanned,
-                                   const TIndex* d_marks, int num_items,
-                                   musaStream_t stream) {
-  if (num_items <= 0) return;
-
-  const int threads = 256;
-  const int blocks = (num_items + threads - 1) / threads;
-
-  // Scatter indices keeping original order using the provided prefix sum
-  // (d_scanned)
-  MusaScatterIndicesKernel<<<blocks, threads, 0, stream>>>(
-      d_marks, d_scanned, selected_indices, num_items);
-}
-
 // Wrapper to launch Mark kernel separately since muDNN needs to be in .h/.cc
 template <typename T, typename TIndex>
 void LaunchMusaMarkFlaggedKernel(const T* input, TIndex* d_marks, int num_items,
@@ -108,9 +76,6 @@ void LaunchMusaMarkFlaggedKernel(const T* input, TIndex* d_marks, int num_items,
 }
 
 #define INSTANTIATE_SELECT_FLAGGED(T, TINDEX)                            \
-  template void LaunchMusaSelectFlaggedKernel<T, TINDEX>(                \
-      const T* input, TINDEX* selected_indices, const TINDEX* d_scanned, \
-      const TINDEX* d_marks, int num_items, musaStream_t stream);        \
   template void LaunchMusaMarkFlaggedKernel<T, TINDEX>(                  \
       const T* input, TINDEX* d_marks, int num_items, musaStream_t stream)
 
@@ -139,27 +104,30 @@ struct StridesPack {
 };
 
 template <int NDIM, typename TIndex>
-__global__ void PropagateWhereIndicesKernel(
-    const TIndex output_rows, const StridesPack<NDIM, TIndex> strides,
-    const TIndex* __restrict__ selected_indices, TIndex* __restrict__ output) {
-  const TIndex i = static_cast<TIndex>(blockIdx.x * blockDim.x + threadIdx.x);
-  if (i < output_rows) {
-    TIndex index_value = selected_indices[i];
+__global__ void ScatterAndPropagateWhereIndicesKernel(
+    const TIndex* __restrict__ d_marks, const TIndex* __restrict__ d_scanned,
+    TIndex* __restrict__ output, const StridesPack<NDIM, TIndex> strides,
+    int num_items) {
+  const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+  if (idx < num_items && d_marks[idx] == 1) {
+    // d_scanned is inclusive sum from muDNN CumSum, so (sum - 1) is the
+    // zero-based index
+    TIndex pos = d_scanned[idx] - 1;
+    TIndex index_value = static_cast<TIndex>(idx);
 #pragma unroll
     for (int c = 0; c < NDIM; ++c) {
       const TIndex stride = strides.v[c];
-      *(output + NDIM * i + c) = index_value / stride;
+      *(output + NDIM * pos + c) = index_value / stride;
       index_value %= stride;
     }
   }
 }
 
 template <int NDIM, typename TIndex>
-void LaunchPropagateWhereIndicesKernel(const TIndex output_rows,
-                                       const TIndex* strides_host,
-                                       const TIndex* selected_indices,
-                                       TIndex* output, musaStream_t stream) {
-  if (output_rows <= static_cast<TIndex>(0)) {
+void LaunchScatterAndPropagateWhereIndicesKernel(
+    const TIndex* d_marks, const TIndex* d_scanned, TIndex* output,
+    const TIndex* strides_host, int num_items, musaStream_t stream) {
+  if (num_items <= 0) {
     return;
   }
 
@@ -169,18 +137,17 @@ void LaunchPropagateWhereIndicesKernel(const TIndex output_rows,
     pack.v[i] = strides_host[i];
   }
 
-  const int block_size = 256;
-  const int grid_size =
-      static_cast<int>((output_rows + block_size - 1) / block_size);
-  PropagateWhereIndicesKernel<NDIM, TIndex>
-      <<<grid_size, block_size, 0, stream>>>(output_rows, pack,
-                                             selected_indices, output);
+  const int threads = 256;
+  const int blocks = (num_items + threads - 1) / threads;
+  ScatterAndPropagateWhereIndicesKernel<NDIM, TIndex>
+      <<<blocks, threads, 0, stream>>>(d_marks, d_scanned, output, pack,
+                                       num_items);
 }
 
-#define INSTANTIATE_PROPAGATE(NDIM, TINDEX)                      \
-  template void LaunchPropagateWhereIndicesKernel<NDIM, TINDEX>( \
-      const TINDEX output_rows, const TINDEX* strides_host,      \
-      const TINDEX* selected_indices, TINDEX* output, musaStream_t stream)
+#define INSTANTIATE_PROPAGATE(NDIM, TINDEX)                            \
+  template void LaunchScatterAndPropagateWhereIndicesKernel<NDIM, TINDEX>( \
+      const TINDEX* d_marks, const TINDEX* d_scanned, TINDEX* output,      \
+      const TINDEX* strides_host, int num_items, musaStream_t stream)
 
 INSTANTIATE_PROPAGATE(1, int32);
 INSTANTIATE_PROPAGATE(2, int32);

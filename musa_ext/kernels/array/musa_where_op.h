@@ -23,17 +23,10 @@ template <typename T, typename TIndex>
 void LaunchMusaMarkFlaggedKernel(const T* input, TIndex* d_marks, int num_items,
                                  musaStream_t stream);
 
-template <typename T, typename TIndex>
-void LaunchMusaSelectFlaggedKernel(const T* input, TIndex* selected_indices,
-                                   const TIndex* d_scanned,
-                                   const TIndex* d_marks, int num_items,
-                                   musaStream_t stream);
-
 template <int NDIM, typename TIndex>
-void LaunchPropagateWhereIndicesKernel(const TIndex output_rows,
-                                       const TIndex* strides_host,
-                                       const TIndex* selected_indices,
-                                       TIndex* output, musaStream_t stream);
+void LaunchScatterAndPropagateWhereIndicesKernel(
+    const TIndex* d_marks, const TIndex* d_scanned, TIndex* output,
+    const TIndex* strides_host, int num_items, musaStream_t stream);
 
 template <typename T, typename TIndex>
 struct NumTrue {
@@ -147,30 +140,19 @@ struct Where {
     ::musa::dnn::MemoryMaintainer maintainer =
         musa_device->GetMemMaintainer(mem_alloc_func);
 
-    // muDNN CumSum handles the global scan
+    // MuDNN CumSum handles the global scan
     mStatus status = cum_op.Run(handle, t_scanned, t_marks, maintainer);
     if (status != mStatus::SUCCESS) {
       return errors::Internal("WhereOp: muDNN CumSum failed with status ",
                               (int)status);
     }
 
-    // Extract indices based on prefix sum
-    Tensor selected_indices_t;
-    TF_RETURN_IF_ERROR(ctx->allocate_temp(
-        DataTypeToEnum<TIndex>::value,
-        TensorShape({static_cast<int64_t>(output.dimension(0))}),
-        &selected_indices_t));
-    TIndex* selected_indices = selected_indices_t.flat<TIndex>().data();
-
-    LaunchMusaSelectFlaggedKernel<T, TIndex>(
-        input.data(), selected_indices, d_scanned, d_marks,
-        static_cast<int>(num_items), stream);
-
     const Eigen::array<TIndex, NDIM> strides =
         CalculateStrides<TIndex, T, NDIM>(input);
     const TIndex output_rows = output.dimension(0);
-    LaunchPropagateWhereIndicesKernel<NDIM, TIndex>(
-        output_rows, strides.data(), selected_indices, output.data(), stream);
+    LaunchScatterAndPropagateWhereIndicesKernel<NDIM, TIndex>(
+        d_marks, d_scanned, output.data(), strides.data(),
+        static_cast<int>(num_items), stream);
 
     return Status::OK();
   }
