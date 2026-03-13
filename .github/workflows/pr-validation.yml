@@ -29,15 +29,7 @@ jobs:
       # 4. 进入容器并验证 MUSA 设备
       - name: Verify MUSA device availability
         run: |
-          docker exec Runner python3 -c "
-            import tensorflow as tf
-            print('TensorFlow version:', tf.__version__)
-            devices = tf.config.list_physical_devices()
-            print('Available devices:', devices)
-            musa_devices = [d for d in devices if 'MUSA' in d.name or 'GPU' in d.name]
-            assert len(musa_devices) > 0, '❌ No MUSA device found!'
-            print('✅ MUSA device detected:', musa_devices[0])
-          "
+          docker exec Runner python3 -c "import tensorflow as tf; print('TensorFlow version:', tf.__version__); devices = tf.config.list_physical_devices(); print('Available devices:', devices); musa_devices = [d for d in devices if 'MUSA' in d.name or 'GPU' in d.name]; assert len(musa_devices) > 0, '❌ No MUSA device found!'; print('✅ MUSA device detected:', musa_devices[0])"
  
       # 5. 进入容器跑单元测试（已修复原脚本中状态输出覆盖的隐藏 Bug）
       - name: Run unit tests
