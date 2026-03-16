@@ -2,6 +2,8 @@
 #include <musa_fp16.h>
 #include <musa_runtime.h>
 
+#include <cub/cub.cuh>
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wignored-pragmas"
 #include "tensorflow/core/framework/bfloat16.h"
@@ -31,6 +33,20 @@ __device__ __forceinline__ bool IsNonZeroValue(const T& v) {
   return v != static_cast<T>(0);
 }
 
+template <typename TIndex>
+__device__ __forceinline__ TIndex AtomicAddOne(TIndex* addr);
+
+template <>
+__device__ __forceinline__ int32 AtomicAddOne<int32>(int32* addr) {
+  return atomicAdd(addr, 1);
+}
+
+template <>
+__device__ __forceinline__ int64 AtomicAddOne<int64>(int64* addr) {
+  return static_cast<int64>(
+      atomicAdd(reinterpret_cast<unsigned long long*>(addr), 1ULL));
+}
+
 template <>
 __device__ __forceinline__ bool IsNonZeroValue<float>(const float& v) {
   return v != 0.0f;
@@ -55,27 +71,70 @@ __device__ __forceinline__ bool IsNonZeroValue<bfloat16>(const bfloat16& v) {
 }
 
 template <typename T, typename TIndex>
-__global__ void IsNonZeroCountKernel(const T* input, TIndex* output, int n) {
+struct NonZeroToCountOp {
+  __device__ __forceinline__ TIndex operator()(const T& v) const {
+    return IsNonZeroValue<T>(v) ? static_cast<TIndex>(1) : static_cast<TIndex>(0);
+  }
+};
+
+template <typename T, typename TIndex>
+__global__ void IsNonZeroCountKernelFallback(const T* input, TIndex* output,
+                                             int n) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < n && IsNonZeroValue<T>(input[idx])) {
-    atomicAdd(reinterpret_cast<unsigned long long*>(output), 1ULL);
+    AtomicAddOne<TIndex>(output);
   }
 }
 
 template <typename T, typename TIndex>
+size_t GetIsNonZeroCountWorkspaceSize(const T* input, TIndex* output, int n,
+                                      musaStream_t stream) {
+  if (n <= 0) return 0;
+
+  cub::TransformInputIterator<TIndex, NonZeroToCountOp<T, TIndex>, const T*>
+      transformed_input(input, NonZeroToCountOp<T, TIndex>());
+
+  size_t temp_bytes = 0;
+  musaError_t st = cub::DeviceReduce::Sum(nullptr, temp_bytes,
+                                          transformed_input, output, n,
+                                          stream);
+  return st == musaSuccess ? temp_bytes : 0;
+}
+
+template <typename T, typename TIndex>
 void LaunchIsNonZeroCount(const T* input, TIndex* output, int n,
+                          void* temp_storage, size_t temp_storage_bytes,
                           musaStream_t stream) {
   if (n <= 0) return;
+
+  cub::TransformInputIterator<TIndex, NonZeroToCountOp<T, TIndex>, const T*>
+      transformed_input(input, NonZeroToCountOp<T, TIndex>());
+
+  if (temp_storage != nullptr && temp_storage_bytes > 0) {
+    musaError_t st = cub::DeviceReduce::Sum(
+        temp_storage, temp_storage_bytes, transformed_input, output, n,
+        stream);
+    if (st == musaSuccess) {
+      return;
+    }
+  }
+
+  // Output counter must be reset before the atomic fallback path.
   musaMemsetAsync(output, 0, sizeof(TIndex), stream);
+
   int threads = 256;
   int blocks = (n + threads - 1) / threads;
-  IsNonZeroCountKernel<T, TIndex>
+  IsNonZeroCountKernelFallback<T, TIndex>
       <<<blocks, threads, 0, stream>>>(input, output, n);
 }
 
 #define REGISTER_IS_NON_ZERO_COUNT(T, TIndex)    \
+  template size_t GetIsNonZeroCountWorkspaceSize<T, TIndex>( \
+      const T* input, TIndex* output, int n, musaStream_t stream); \
+  \
   template void LaunchIsNonZeroCount<T, TIndex>( \
-      const T* input, TIndex* output, int n, musaStream_t stream)
+      const T* input, TIndex* output, int n, void* temp_storage, \
+      size_t temp_storage_bytes, musaStream_t stream)
 
 REGISTER_IS_NON_ZERO_COUNT(float, int32);
 REGISTER_IS_NON_ZERO_COUNT(double, int32);
