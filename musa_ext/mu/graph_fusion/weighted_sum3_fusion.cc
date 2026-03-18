@@ -224,7 +224,8 @@ Status MusaWeightedSum3Fusion::Apply(
   for (auto it = fuse_node_names.begin(); it != fuse_node_names.end();) {
     int idx = FusionGraphUtils::FindNodeIndex(*graph, *it);
     if (idx >= 0) {
-      VLOG(2) << "MusaWeightedSum3Fusion: Removing node: " << graph->node(idx).name();
+      VLOG(2) << "MusaWeightedSum3Fusion: Removing node: "
+              << graph->node(idx).name();
       FusionGraphUtils::RemoveNode(graph, idx);
       removed_count++;
       it = fuse_node_names.erase(it);
