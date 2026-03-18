@@ -268,7 +268,8 @@ Status MusaWeightedSum3Fusion::Apply(
   std::sort(indices_to_remove.rbegin(), indices_to_remove.rend());
 
   for (int idx : indices_to_remove) {
-    VLOG(2) << "MusaWeightedSum3Fusion: Removing node: " << graph->node(idx).name();
+    VLOG(2) << "MusaWeightedSum3Fusion: Removing node: "
+            << graph->node(idx).name();
     FusionGraphUtils::RemoveNode(graph, idx);
   }
 
