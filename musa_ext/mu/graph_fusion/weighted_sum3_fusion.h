@@ -13,8 +13,8 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#ifndef TENSORFLOW_MUSA_EXTENSION_GRAPH_FUSION_LAYERNORM_FUSION_H_
-#define TENSORFLOW_MUSA_EXTENSION_GRAPH_FUSION_LAYERNORM_FUSION_H_
+#ifndef TENSORFLOW_MUSA_EXTENSION_GRAPH_FUSION_WEIGHTED_SUM3_FUSION_H_
+#define TENSORFLOW_MUSA_EXTENSION_GRAPH_FUSION_WEIGHTED_SUM3_FUSION_H_
 
 #include <string>
 #include <vector>
@@ -25,40 +25,35 @@ namespace tensorflow {
 namespace grappler {
 namespace musa_fusion {
 
-class MusaTokenMixerFusion : public FusionPattern {
+class MusaWeightedSum3Fusion : public FusionPattern {
  public:
-  MusaTokenMixerFusion();
-  ~MusaTokenMixerFusion() override = default;
+  MusaWeightedSum3Fusion();
+  ~MusaWeightedSum3Fusion() override = default;
 
-  // Match the TokenMixer pattern starting from a node
+  // Match the WeightedSum3 pattern starting from a node
   FusionMatchResult Match(const GraphDef& graph,
                           int start_node_idx) const override;
 
-  // Apply the fusion: replace matched subgraph with MusaTokenMixer
+  // Apply the fusion: replace matched subgraph with MusaWeightedSum3
   Status Apply(GraphDef* graph,
                const FusionMatchResult& match_result) const override;
 
   // Priority: higher than basic patterns
   int GetPriority() const override { return 100; }
 
-  // Kernel is available (implemented in musa_tokenmixer_op.cc)
+  // Kernel is available (implemented in musa_weighted_sum3_op.cc)
   bool IsKernelAvailable() const override;
 
-  std::string GetName() const override { return "MusaTokenMixerFusion"; }
+  std::string GetName() const override { return "MusaWeightedSum3Fusion"; }
 
   std::string GetFallbackReason() const override {
     if (!kernel_available_) {
-      return "MusaTokenMixer kernel not available on this device";
+      return "MusaWeightedSum3 kernel not available on this device";
     }
     return "";
   }
 
  private:
-  // Match TokenMixer pattern starting from Add node (beta addition)
-  // This is the most reliable matching strategy
-  FusionMatchResult MatchFromReshapeNode(const GraphDef& graph,
-                                         int reshape_node_idx) const;
-
   // Kernel availability flag
   mutable bool kernel_available_ = true;
   mutable bool kernel_checked_ = false;
@@ -68,4 +63,4 @@ class MusaTokenMixerFusion : public FusionPattern {
 }  // namespace grappler
 }  // namespace tensorflow
 
-#endif  // TENSORFLOW_MUSA_EXTENSION_GRAPH_FUSION_LAYERNORM_FUSION_H_
+#endif  // TENSORFLOW_MUSA_EXTENSION_GRAPH_FUSION_WEIGHTED_SUM3_FUSION_H_
