@@ -217,7 +217,8 @@ Status MusaWeightedSum3Fusion::Apply(
       *weight_input = in1;
       *data_input = in0;
     } else {
-      // Fallback: assume input(1) is weight (original code used input(0) as data)
+      // Fallback: assume input(1) is weight (original code used input(0) as
+      // data)
       *data_input = in0;
       *weight_input = in1;
     }
