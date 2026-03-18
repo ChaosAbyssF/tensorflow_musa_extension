@@ -163,7 +163,6 @@ Status MusaWeightedSum3Fusion::Apply(
   const NodeDef* mul1_node = mul1_it->second;
 
   const std::string original_name = output_node->name();
-  const std::string original_output_name = original_name + "_original";
 
   // Check if this output node has already been fused (avoid duplicates)
   for (const auto& node : graph->node()) {
@@ -174,31 +173,11 @@ Status MusaWeightedSum3Fusion::Apply(
     }
   }
 
-  // Find the original output node within the graph
-  int output_node_idx = -1;
-  for (int i = 0; i < graph->node_size(); ++i) {
-    if (graph->node(i).name() == original_name) {
-      output_node_idx = i;
-      break;
-    }
-  }
-  if (output_node_idx < 0) {
-    return Status(error::INVALID_ARGUMENT,
-                  "Failed to find output node in graph: " + original_name);
-  }
+  // Preserve output device before removing nodes
+  const std::string output_device = output_node->device();
 
   VLOG(1) << "MusaWeightedSum3Fusion: Replacing " << original_name
           << " with MusaWeightedSum3";
-
-  NodeDef* original_output_node = graph->mutable_node(output_node_idx);
-  const std::string output_device = original_output_node->device();
-  original_output_node->set_name(original_output_name);
-
-  // Create fused node
-  NodeDef* fused_node = graph->add_node();
-  fused_node->set_name(original_name);
-  fused_node->set_op("MusaWeightedSum3");
-  fused_node->set_device(output_device);
 
   // Determine data and weight inputs for each Mul and set fused inputs.
   // MusaWeightedSum3 expects inputs: a, b, c, alpha, beta, gamma
@@ -231,6 +210,37 @@ Status MusaWeightedSum3Fusion::Apply(
   pick_data_and_weight(mul1_node, &data1, &w1);
   pick_data_and_weight(mul2_node, &data2, &w2);
 
+  // data/weight inputs will be appended after fused node is created
+
+  // Collect nodes that belong to the matched subgraph and will be removed.
+  std::unordered_set<std::string> fuse_node_names = {
+      original_name, add0_node->name(), mul0_node->name(), mul1_node->name(),
+      mul2_node->name()};
+
+  VLOG(2) << "MusaWeightedSum3Fusion: will remove " << fuse_node_names.size()
+          << " nodes";
+
+  int removed_count = 0;
+  for (auto it = fuse_node_names.begin(); it != fuse_node_names.end();) {
+    int idx = FusionGraphUtils::FindNodeIndex(*graph, *it);
+    if (idx >= 0) {
+      VLOG(2) << "MusaWeightedSum3Fusion: Removing node: " << graph->node(idx).name();
+      FusionGraphUtils::RemoveNode(graph, idx);
+      removed_count++;
+      it = fuse_node_names.erase(it);
+    } else {
+      ++it;
+    }
+  }
+
+  VLOG(2) << "MusaWeightedSum3Fusion: removed " << removed_count << " nodes";
+
+  // Create fused node (with the original output name)
+  NodeDef* fused_node = graph->add_node();
+  fused_node->set_name(original_name);
+  fused_node->set_op("MusaWeightedSum3");
+  fused_node->set_device(output_device);
+
   // data inputs
   if (!data0.empty()) fused_node->add_input(data0);
   if (!data1.empty()) fused_node->add_input(data1);
@@ -240,38 +250,6 @@ Status MusaWeightedSum3Fusion::Apply(
   if (!w0.empty()) fused_node->add_input(w0);
   if (!w1.empty()) fused_node->add_input(w1);
   if (!w2.empty()) fused_node->add_input(w2);
-
-  // Remove helper/original nodes. Rename earlier changed the original output
-  // node to `<original>_original`. We want to remove that renamed node and
-  // the helper mul/add nodes. Remove by index in descending order to avoid
-  // shifting indices while deleting.
-  std::unordered_set<std::string> nodes_to_remove_set;
-  nodes_to_remove_set.insert(original_output_name);
-  nodes_to_remove_set.insert(add0_node->name());
-  nodes_to_remove_set.insert(mul0_node->name());
-  nodes_to_remove_set.insert(mul1_node->name());
-  nodes_to_remove_set.insert(mul2_node->name());
-
-  // Collect indices to remove
-  std::vector<int> indices_to_remove;
-  VLOG(2) << "MusaWeightedSum3Fusion: Graph nodes before removal:";
-  for (int i = 0; i < graph->node_size(); ++i) {
-    VLOG(2) << "  - " << graph->node(i).name();
-  }
-  VLOG(2) << "MusaWeightedSum3Fusion: Nodes to remove set:";
-  for (const auto& n : nodes_to_remove_set) VLOG(2) << "  -> " << n;
-  for (int i = 0; i < graph->node_size(); ++i) {
-    if (nodes_to_remove_set.count(graph->node(i).name()) > 0) {
-      indices_to_remove.push_back(i);
-    }
-  }
-  std::sort(indices_to_remove.rbegin(), indices_to_remove.rend());
-
-  for (int idx : indices_to_remove) {
-    VLOG(2) << "MusaWeightedSum3Fusion: Removing node: "
-            << graph->node(idx).name();
-    FusionGraphUtils::RemoveNode(graph, idx);
-  }
 
   // Try to remove weight Const nodes (alpha/beta/gamma) if they are unused.
   // The fused inputs (w0/w1/w2) may contain port suffixes; get producer names.
