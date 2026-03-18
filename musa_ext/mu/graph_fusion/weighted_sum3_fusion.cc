@@ -198,10 +198,45 @@ Status MusaWeightedSum3Fusion::Apply(
   fused_node->set_op("MusaWeightedSum3");
   fused_node->set_device(output_device);
 
-  // Set inputs: mul0, mul1, mul2
-  fused_node->add_input(mul0_node->input(0));
-  fused_node->add_input(mul1_node->input(0));
-  fused_node->add_input(mul2_node->input(0));
+  // Determine data and weight inputs for each Mul and set fused inputs.
+  // MusaWeightedSum3 expects inputs: a, b, c, alpha, beta, gamma
+  auto pick_data_and_weight = [&](const NodeDef* mul_node,
+                                  std::string* data_input,
+                                  std::string* weight_input) {
+    if (!mul_node) return;
+    if (mul_node->input_size() < 2) return;
+    const std::string in0 = mul_node->input(0);
+    const std::string in1 = mul_node->input(1);
+    const NodeDef* p0 = FindProducer(*graph, in0);
+    const NodeDef* p1 = FindProducer(*graph, in1);
+    // Prefer treating a Const producer as the weight (scalar)
+    if (p0 && p0->op() == "Const") {
+      *weight_input = in0;
+      *data_input = in1;
+    } else if (p1 && p1->op() == "Const") {
+      *weight_input = in1;
+      *data_input = in0;
+    } else {
+      // Fallback: assume input(1) is weight (original code used input(0) as data)
+      *data_input = in0;
+      *weight_input = in1;
+    }
+  };
+
+  std::string data0, w0, data1, w1, data2, w2;
+  pick_data_and_weight(mul0_node, &data0, &w0);
+  pick_data_and_weight(mul1_node, &data1, &w1);
+  pick_data_and_weight(mul2_node, &data2, &w2);
+
+  // data inputs
+  if (!data0.empty()) fused_node->add_input(data0);
+  if (!data1.empty()) fused_node->add_input(data1);
+  if (!data2.empty()) fused_node->add_input(data2);
+
+  // weight (scalar) inputs: alpha, beta, gamma
+  if (!w0.empty()) fused_node->add_input(w0);
+  if (!w1.empty()) fused_node->add_input(w1);
+  if (!w2.empty()) fused_node->add_input(w2);
 
   // Remove nodes if unused
   std::vector<std::string> nodes_to_remove = {
