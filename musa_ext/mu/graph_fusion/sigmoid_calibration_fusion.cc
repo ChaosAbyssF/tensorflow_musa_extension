@@ -83,13 +83,7 @@ bool HasFloatValue(const NodeDef& node, float expected_val,
 MusaSigmoidCalibrationFusion::MusaSigmoidCalibrationFusion() = default;
 
 bool MusaSigmoidCalibrationFusion::IsKernelAvailable() const {
-  if (!kernel_checked_) {
-    // We assume the kernel will be implemented or we use a fallback if needed
-    // In this context, we mark it as available for fusion to take place
-    kernel_available_ = true;
-    kernel_checked_ = true;
-  }
-  return kernel_available_;
+  return false;  // Placeholder: Update this when the kernel is implemented
 }
 
 FusionMatchResult MusaSigmoidCalibrationFusion::Match(
