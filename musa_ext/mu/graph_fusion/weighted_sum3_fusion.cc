@@ -1,0 +1,221 @@
+#include "weighted_sum3_fusion.h"
+
+namespace tensorflow {
+namespace grappler {
+namespace musa_fusion {
+
+/*
+
+input0 -> Mul0 \
+                Add0 -> Add1 -> output
+input1 -> Mul1 /       /
+                      /
+input2 -> Mul2 ------/
+
+*/
+
+namespace {
+bool IsOp(const NodeDef& node, const std::string& op_type) {
+  return node.op() == op_type;
+}
+
+bool IsAddOp(const NodeDef& node) {
+  return IsOp(node, "Add") || IsOp(node, "AddV2") || IsOp(node, "BiasAdd");
+}
+
+// Helper to find node's input producer
+const NodeDef* FindProducer(const GraphDef& graph, const std::string& input) {
+  if (input.empty()) return nullptr;
+
+  std::string node_name = input;
+  if (node_name[0] == '^') {
+    node_name = node_name.substr(1);
+  }
+  const size_t colon_pos = node_name.find(':');
+  if (colon_pos != std::string::npos) {
+    node_name = node_name.substr(0, colon_pos);
+  }
+
+  for (int i = 0; i < graph.node_size(); ++i) {
+    if (graph.node(i).name() == node_name) {
+      return &graph.node(i);
+    }
+  }
+  return nullptr;
+}
+
+bool HasOriginalSuffix(const std::string& node_name) {
+  static const std::string kOriginalSuffix = "_original";
+  return node_name.size() >= kOriginalSuffix.size() &&
+         node_name.compare(node_name.size() - kOriginalSuffix.size(),
+                           kOriginalSuffix.size(), kOriginalSuffix) == 0;
+}
+
+}  // namespace
+
+bool MusaWeightedSum3Fusion::IsKernelAvailable() const {
+  if (!kernel_checked_) {
+    kernel_available_ = true;
+    kernel_checked_ = true;
+  }
+  return kernel_available_;
+}
+
+FusionMatchResult MusaWeightedSum3Fusion::Match(const GraphDef& graph,
+                                                int start_node_idx) const {
+  FusionMatchResult result;
+  if (start_node_idx < 0 || start_node_idx >= graph.node_size()) {
+    return result;
+  }
+
+  const NodeDef& add_node1 = graph.node(start_node_idx);
+
+  // match start with Add node1
+  if (!IsAddOp(add_node1)) {
+    return result;
+  }
+
+  // find Add node0 & Mul node2
+  const NodeDef* add_node0 = nullptr;
+  const NodeDef* mul_node2 = nullptr;
+  for (int i = 0; i < add_node1.input_size(); ++i) {
+    const NodeDef* input_node = FindProducer(graph, add_node1.input(i));
+    if (input_node && IsAddOp(*input_node)) {
+      add_node0 = input_node;
+      break;
+    }
+    if (input_node && IsOp(*input_node, "Mul")) {
+      mul_node2 = input_node;
+    }
+  }
+
+  if (!add_node0 || !mul_node2) {
+    return result;
+  }
+
+  // find Mul node0 & Mul node1
+  const NodeDef* mul_node0 = nullptr;
+  const NodeDef* mul_node1 = nullptr;
+  for (int i = 0; i < add_node0->input_size(); ++i) {
+    const NodeDef* input_node = FindProducer(graph, add_node0->input(i));
+    if (input_node && IsOp(*input_node, "Mul")) {
+      if (!mul_node0) {
+        mul_node0 = input_node;
+      } else if (!mul_node1) {
+        mul_node1 = input_node;
+      }
+    }
+  }
+
+  if (!mul_node0 || !mul_node1) {
+    return result;
+  }
+
+  result.matched = true;
+  result.matched_nodes.push_back(&add_node1);
+  result.matched_nodes.push_back(add_node0);
+  result.matched_nodes.push_back(mul_node2);
+  result.matched_nodes.push_back(mul_node0);
+  result.matched_nodes.push_back(mul_node1);
+
+  result.captured_nodes["add1"] = &add_node1;
+  result.captured_nodes["add0"] = add_node0;
+  result.captured_nodes["mul2"] = mul_node2;
+  result.captured_nodes["mul0"] = mul_node0;
+  result.captured_nodes["mul1"] = mul_node1;
+
+  return result;
+}
+
+Status MusaWeightedSum3Fusion::Apply(
+    GraphDef* graph, const FusionMatchResult& match_result) const {
+  if (!match_result.IsValid()) {
+    return Status(error::INVALID_ARGUMENT,
+                  "Invalid match result for MusaWeightedSum3Fusion");
+  }
+
+  if (!IsKernelAvailable()) {
+    return Status::OK();
+  }
+
+  // Get captured nodes
+  auto output_it = match_result.captured_nodes.find("add1");
+  auto add0_it = match_result.captured_nodes.find("add0");
+  auto mul2_it = match_result.captured_nodes.find("mul2");
+  auto mul0_it = match_result.captured_nodes.find("mul0");
+  auto mul1_it = match_result.captured_nodes.find("mul1");
+
+  if (output_it == match_result.captured_nodes.end() ||
+      add0_it == match_result.captured_nodes.end() ||
+      mul2_it == match_result.captured_nodes.end() ||
+      mul0_it == match_result.captured_nodes.end() ||
+      mul1_it == match_result.captured_nodes.end()) {
+    return Status(error::INVALID_ARGUMENT,
+                  "Missing captured nodes for MusaWeightedSum3Fusion");
+  }
+
+  const NodeDef* output_node = output_it->second;
+  const NodeDef* add0_node = add0_it->second;
+  const NodeDef* mul2_node = mul2_it->second;
+  const NodeDef* mul0_node = mul0_it->second;
+  const NodeDef* mul1_node = mul1_it->second;
+
+  const std::string original_name = output_node->name();
+  const std::string original_output_name = original_name + "_original";
+
+  // Check if this output node has already been fused (avoid duplicates)
+  for (const auto& node : graph->node()) {
+    if (node.name() == original_name && node.op() == "MusaWeightedSum3") {
+      VLOG(1) << "MusaWeightedSum3Fusion: Output node " << original_name
+              << " is already a fused node, skipping";
+      return Status::OK();
+    }
+  }
+
+  // Find the original output node within the graph
+  int output_node_idx = -1;
+  for (int i = 0; i < graph->node_size(); ++i) {
+    if (graph->node(i).name() == original_name) {
+      output_node_idx = i;
+      break;
+    }
+  }
+  if (output_node_idx < 0) {
+    return Status(error::INVALID_ARGUMENT,
+                  "Failed to find output node in graph: " + original_name);
+  }
+
+  VLOG(1) << "MusaWeightedSum3Fusion: Replacing " << original_name
+          << " with MusaWeightedSum3";
+
+  NodeDef* original_output_node = graph->mutable_node(output_node_idx);
+  const std::string output_device = original_output_node->device();
+  original_output_node->set_name(original_output_name);
+
+  // Create fused node
+  NodeDef* fused_node = graph->add_node();
+  fused_node->set_name(original_name);
+  fused_node->set_op("MusaWeightedSum3");
+  fused_node->set_device(output_device);
+
+  // Set inputs: mul0, mul1, mul2
+  fused_node->add_input(mul0_node->input(0));
+  fused_node->add_input(mul1_node->input(0));
+  fused_node->add_input(mul2_node->input(0));
+
+  // Remove nodes if unused
+  std::vector<std::string> nodes_to_remove = {
+      add0_node->name(), add0_node->name(), mul0_node->name(),
+      mul1_node->name(), mul2_node->name()};
+  FusionGraphUtils::RemoveNodesIfUnused(graph, nodes_to_remove);
+
+  return Status::OK();
+}
+
+REGISTER_FUSION_PATTERN(MusaWeightedSum3Fusion);
+
+REGISTER_FUSION_KERNEL(MusaWeightedSum3Fusion, []() { return true; });
+
+}  // namespace musa_fusion
+}  // namespace grappler
+}  // namespace tensorflow
