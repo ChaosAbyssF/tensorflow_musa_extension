@@ -83,7 +83,11 @@ bool HasFloatValue(const NodeDef& node, float expected_val,
 MusaSigmoidCalibrationFusion::MusaSigmoidCalibrationFusion() = default;
 
 bool MusaSigmoidCalibrationFusion::IsKernelAvailable() const {
-  return false;  // Placeholder: Update this when the kernel is implemented
+  if (!kernel_checked_) {
+    kernel_available_ = true;
+    kernel_checked_ = true;
+  }
+  return kernel_available_;
 }
 
 FusionMatchResult MusaSigmoidCalibrationFusion::Match(
@@ -257,7 +261,7 @@ std::string MusaSigmoidCalibrationFusion::sigmoid_node_input_name(
 REGISTER_FUSION_PATTERN(MusaSigmoidCalibrationFusion);
 
 // 注册 kernel 可用性
-REGISTER_FUSION_KERNEL(MusaSigmoidCalibrationFusion, []() { return false; });
+REGISTER_FUSION_KERNEL(MusaSigmoidCalibrationFusion, []() { return true; });
 
 }  // namespace musa_fusion
 }  // namespace grappler

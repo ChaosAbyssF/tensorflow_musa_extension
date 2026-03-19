@@ -17,6 +17,8 @@ void LaunchSigmoidCalibrationKernel(const void*, const void*, void*, int,
  *
  * Performs fusion: S / (S + Scale * (1 - S))
  * where S = Sigmoid(x)
+ * 
+ * Note that this formula is equivalent to `1 / (1 + Scale * exp(-x))`
  *
  * This implements the specific activation logic from the given graph.
  */
@@ -34,27 +36,14 @@ class MusaSigmoidCalibrationOp : public MusaOpKernel {
 
     if (input.NumElements() == 0) return;
 
-    auto& handle = GetHandleByCtx(ctx);
-    mTensor in_mt = CreateMTensor(input);
-    mTensor scale_mt = CreateMTensor(scale);
-
-    // 1. Sigmoid
-    Tensor sigmoid_output;
-    OP_REQUIRES_OK(
-        ctx, ctx->allocate_temp(input.dtype(), input.shape(), &sigmoid_output));
-    mTensor sigmoid_mt = CreateMTensor(sigmoid_output);
-    mUnary op;
-    MTOP_CHECK_OK(op.SetMode(mUnary::Mode::SIGMOID), "Set Sigmoid", ctx);
-    MTOP_CHECK_OK_RUN(op.Run(handle, sigmoid_mt, in_mt), "Sigmoid Forward Run",
-                      ctx);
-
-    // 2. Compute S / (S + Scale * (1 - S))
+    // Compute S / (S + Scale * (1 - S))
     Tensor* output;
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, input.shape(), &output));
     musaStream_t stream = GetMusaStreamByCtx(ctx);
     LaunchSigmoidCalibrationKernel<T>(
-        sigmoid_mt.GetImpl(), scale_mt.GetImpl(), output->flat<T>().data(),
-        static_cast<int>(input.NumElements()), stream);
+        input.flat<T>().data(), scale.flat<T>().data(),
+        output->flat<T>().data(), static_cast<int>(input.NumElements()),
+        stream);
   }
 };
 

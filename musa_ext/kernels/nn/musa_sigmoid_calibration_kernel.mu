@@ -42,13 +42,19 @@ __device__ __forceinline__ void StoreFloat(bfloat16* p, float v) {
 }
 
 template <typename T>
-__global__ void SigmoidCalibrationKernel(const T* input, const T* scale,
+__global__ void SigmoidCalibrationKernel(const T* input, const T* scale_ptr,
                                          T* output, int n) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < n) {
     float x = LoadFloat(&input[idx]);
-    float s = LoadFloat(&scale[idx]);
-    float result = x / (x + s * (1.0f - x));
+    float scale_val = LoadFloat(&scale_ptr[idx]);
+    // Optimized formula:
+    // s = 1 / (1 + exp(-x))
+    // res = s / (s + scale * (1 - s))
+    // res = 1 / (1 + scale * (1-s)/s)
+    // (1-s)/s = (1 - 1/(1+exp(-x))) / (1/(1+exp(-x))) = exp(-x)
+    // res = 1 / (1 + scale * exp(-x))
+    float result = 1.0f / (1.0f + scale_val * expf(-x));
     StoreFloat(&output[idx], result);
   }
 }
@@ -59,14 +65,16 @@ __global__ void SigmoidCalibrationKernel<double>(const double* input,
                                                  double* output, int n) {
   int idx = blockIdx.x * blockDim.x + threadIdx.x;
   if (idx < n) {
-    output[idx] = input[idx] / (input[idx] + scale[idx] * (1.0 - input[idx]));
+    double x = input[idx];
+    double scale_val = scale[idx];
+    double result = 1.0 / (1.0 + scale_val * exp(-x));
+    output[idx] = result;
   }
 }
 
 template <typename T>
 void LaunchSigmoidCalibrationKernel(const void* input, const void* scale,
                                     void* output, int n, musaStream_t stream) {
-  // Fuse BiasAdd + Relu
   const int block_size = 256;
   const int grid_size = (n + block_size - 1) / block_size;
   SigmoidCalibrationKernel<<<grid_size, block_size, 0, stream>>>(
