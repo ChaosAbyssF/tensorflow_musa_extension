@@ -17,7 +17,7 @@ void LaunchSigmoidCalibrationKernel(const void*, const void*, void*, int,
  *
  * Performs fusion: S / (S + Scale * (1 - S))
  * where S = Sigmoid(x)
- * 
+ *
  * Note that this formula is equivalent to `1 / (1 + Scale * exp(-x))`
  *
  * This implements the specific activation logic from the given graph.
