@@ -261,8 +261,9 @@ Status MusaSigmoidCalibrationFusion::Apply(
   for (const auto& node : graph->node()) {
     if (node.name() == original_name && node.op() == "MusaSigmoidCalibration") {
       found_fused_node = true;
-      LOG(INFO) << "MusaSigmoidCalibrationFusion: Successfully added fused node "
-                << original_name << " to graph";
+      LOG(INFO)
+          << "MusaSigmoidCalibrationFusion: Successfully added fused node "
+          << original_name << " to graph";
       break;
     }
   }
