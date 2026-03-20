@@ -101,7 +101,7 @@ class MusaMeanOp : public MusaOpKernel {
 
     Tensor out_reshaped(out->dtype());
     OP_REQUIRES(ctx, out_reshaped.CopyFrom(*out, musa_output_shape),
-                errors::Internal("Reshape failed."));
+                errors::Internal("MUSA Mean: Reshape failed."));
 
     mTensor t_in = CreateMTensor(input, format_);
     mTensor t_out = CreateMTensor(out_reshaped, format_);
