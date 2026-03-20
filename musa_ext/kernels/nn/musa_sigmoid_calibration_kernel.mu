@@ -48,12 +48,6 @@ __global__ void SigmoidCalibrationKernel(const T* input, const T* scale_ptr,
   if (idx < n) {
     float x = LoadFloat(&input[idx]);
     float scale_val = LoadFloat(&scale_ptr[idx]);
-    // Optimized formula:
-    // s = 1 / (1 + exp(-x))
-    // res = s / (s + scale * (1 - s))
-    // res = 1 / (1 + scale * (1-s)/s)
-    // (1-s)/s = (1 - 1/(1+exp(-x))) / (1/(1+exp(-x))) = exp(-x)
-    // res = 1 / (1 + scale * exp(-x))
     float result = 1.0f / (1.0f + scale_val * expf(-x));
     StoreFloat(&output[idx], result);
   }
