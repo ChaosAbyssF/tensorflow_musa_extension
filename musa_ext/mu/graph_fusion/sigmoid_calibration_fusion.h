@@ -45,7 +45,6 @@ class MusaSigmoidCalibrationFusion : public FusionPattern {
   std::string GetName() const override { return "MusaSigmoidCalibrationFusion"; }
 
  private:
-  std::string sigmoid_node_input_name(const FusionMatchResult& match_result) const;
   mutable bool kernel_available_ = false;
   mutable bool kernel_checked_ = false;
 };

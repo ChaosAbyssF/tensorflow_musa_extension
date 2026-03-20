@@ -152,6 +152,13 @@ FusionMatchResult MusaSigmoidCalibrationFusion::Match(
   result.matched = true;
   result.matched_nodes = {&real_div_node, add_node, mul_node, sub_node,
                           sigmoid_node};
+
+  result.captured_nodes["output"] = &real_div_node;
+  result.captured_nodes["add"] = add_node;
+  result.captured_nodes["mul"] = mul_node;
+  result.captured_nodes["sub"] = sub_node;
+  result.captured_nodes["sigmoid"] = sigmoid_node;
+
   result.captured_nodes["input"] = FindProducer(graph, sigmoid_node->input(0));
   result.captured_nodes["scale"] = scale_const_node;
   result.captured_nodes["one_const"] = one_const_node;
@@ -170,67 +177,101 @@ Status MusaSigmoidCalibrationFusion::Apply(
     return Status::OK();
   }
 
-  const NodeDef* real_div_node = match_result.matched_nodes[0];
-  const NodeDef* add_node = match_result.matched_nodes[1];
-  const NodeDef* mul_node = match_result.matched_nodes[2];
-  const NodeDef* sub_node = match_result.matched_nodes[3];
-  const NodeDef* sigmoid_node = match_result.matched_nodes[4];
+  // Get captured nodes
+  auto output_it = match_result.captured_nodes.find("output");
+  auto sigmoid_it = match_result.captured_nodes.find("sigmoid");
+  auto input_it = match_result.captured_nodes.find("input");
+  auto scale_it = match_result.captured_nodes.find("scale");
+  auto one_const_it = match_result.captured_nodes.find("one_const");
 
-  const NodeDef* scale_const_node = match_result.captured_nodes.at("scale");
-  const NodeDef* one_const_node = match_result.captured_nodes.at("one_const");
-
-  DataType dtype = DT_FLOAT;
-  auto it = real_div_node->attr().find("T");
-  if (it != real_div_node->attr().end()) {
-    dtype = it->second.type();
+  if (output_it == match_result.captured_nodes.end() ||
+      sigmoid_it == match_result.captured_nodes.end() ||
+      input_it == match_result.captured_nodes.end() ||
+      scale_it == match_result.captured_nodes.end() ||
+      one_const_it == match_result.captured_nodes.end()) {
+    return Status(error::INVALID_ARGUMENT,
+                  "Missing required nodes in SigmoidCalibration pattern");
   }
 
-  // 1. Directly modify real_div_node in place to become MusaSigmoidCalibration
-  NodeDef* fused_node = const_cast<NodeDef*>(real_div_node);
-  std::string original_name = fused_node->name();
+  const NodeDef* output_node = output_it->second;
+  const NodeDef* sigmoid_node = sigmoid_it->second;
+  const NodeDef* input_node = input_it->second;
+  const NodeDef* scale_const_node = scale_it->second;
+  const NodeDef* one_const_node = one_const_it->second;
 
-  fused_node->set_op("MusaSigmoidCalibration");
-  fused_node->clear_input();
-  fused_node->add_input(sigmoid_node_input_name(match_result));
-  fused_node->add_input(scale_const_node->name());
-  fused_node->add_input(one_const_node->name());
-  // Attribute T is already set, but let's ensure it's correct
-  (*fused_node->mutable_attr())["T"].set_type(dtype);
+  const std::string original_name = output_node->name();
+  const std::string original_output_name = original_name + "_original";
 
-  VLOG(INFO) << "MusaSigmoidCalibration: In-place fused node updated as "
-             << original_name;
-
-  // 2. Mark intermediate nodes for removal
-  std::set<std::string> nodes_to_remove;
-  nodes_to_remove.insert(add_node->name());
-  nodes_to_remove.insert(mul_node->name());
-  nodes_to_remove.insert(sub_node->name());
-  nodes_to_remove.insert(sigmoid_node->name());
-
-  std::vector<int> indices_to_remove;
-  for (int i = 0; i < graph->node_size(); ++i) {
-    const std::string& node_name = graph->node(i).name();
-    if (nodes_to_remove.count(node_name) > 0) {
-      LOG(INFO) << "Deleting node: " << node_name;
-      indices_to_remove.push_back(i);
+  // Check if this output node has already been fused (avoid duplicates)
+  for (const auto& node : graph->node()) {
+    if (node.name() == original_name && node.op() == "MusaSigmoidCalibration") {
+      VLOG(1) << "MusaSigmoidCalibration: Output node " << original_name
+              << " is already a fused node, skipping";
+      return Status::OK();
     }
   }
 
-  std::sort(indices_to_remove.rbegin(), indices_to_remove.rend());
-  for (int idx : indices_to_remove) {
-    graph->mutable_node()->DeleteSubrange(idx, 1);
+  int output_node_idx = FusionGraphUtils::FindNodeIndex(*graph, original_name);
+  if (output_node_idx < 0) {
+    return Status(error::INVALID_ARGUMENT,
+                  "Failed to find output node in graph: " + original_name);
+  }
+
+  VLOG(INFO) << "MusaSigmoidCalibrationFusion: Replacing " << original_name
+             << " with MusaSigmoidCalibration";
+
+  NodeDef* original_node = graph->mutable_node(output_node_idx);
+  const std::string output_device = original_node->device();
+
+  DataType dtype = DT_FLOAT;
+  auto it = original_node->attr().find("T");
+  if (it != original_node->attr().end()) {
+    dtype = it->second.type();
+  }
+
+  original_node->set_name(original_output_name);
+
+  // 1. Add new fused node
+  NodeDef* fused_node = graph->add_node();
+  fused_node->set_name(original_name);
+  fused_node->set_op("MusaSigmoidCalibration");
+  fused_node->set_device(output_device);
+
+  fused_node->add_input(sigmoid_node->input(0));
+  fused_node->add_input(scale_const_node->name());
+  fused_node->add_input(one_const_node->name());
+
+  (*fused_node->mutable_attr())["T"].set_type(dtype);
+
+  VLOG(INFO) << "MusaSigmoidCalibration: Fused node added as " << original_name;
+
+  // 2. Remove intermediate nodes if unused
+  std::vector<std::string> removable_names = {
+      original_output_name, match_result.captured_nodes.at("add")->name(),
+      match_result.captured_nodes.at("mul")->name(),
+      match_result.captured_nodes.at("sub")->name(), sigmoid_node->name()};
+
+  FusionGraphUtils::RemoveNodesIfUnused(
+      graph, removable_names,
+      {input_node->name(), scale_const_node->name(), one_const_node->name(),
+       original_name});
+
+  // 检查融合算子确实被加入到图中了
+  bool found_fused_node = false;
+  for (const auto& node : graph->node()) {
+    if (node.name() == original_name && node.op() == "MusaSigmoidCalibration") {
+      found_fused_node = true;
+      LOG(INFO) << "MusaSigmoidCalibrationFusion: Successfully added fused node "
+                << original_name << " to graph";
+      break;
+    }
+  }
+  if (!found_fused_node) {
+    return Status(error::INTERNAL,
+                  "Failed to add fused node to graph: " + original_name);
   }
 
   return Status::OK();
-}
-
-std::string MusaSigmoidCalibrationFusion::sigmoid_node_input_name(
-    const FusionMatchResult& match_result) const {
-  const NodeDef* sigmoid_node = match_result.matched_nodes[4];
-  if (sigmoid_node->input_size() > 0) {
-    return sigmoid_node->input(0);
-  }
-  return "";
 }
 
 // 注册融合模式
