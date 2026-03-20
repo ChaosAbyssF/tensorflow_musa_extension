@@ -150,8 +150,8 @@ FusionMatchResult MusaSigmoidCalibrationFusion::Match(
 
   // Success!
   result.matched = true;
-  result.matched_nodes = {&real_div_node, add_node, mul_node, sub_node,
-                          one_const_node, sigmoid_node};
+  result.matched_nodes = {&real_div_node, add_node,       mul_node,
+                          sub_node,       one_const_node, sigmoid_node};
   result.captured_nodes["input"] = FindProducer(graph, sigmoid_node->input(0));
   result.captured_nodes["scale"] = scale_const_node;
 
