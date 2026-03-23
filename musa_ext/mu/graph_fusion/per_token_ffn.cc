@@ -64,7 +64,7 @@ static bool TryFindBatchMatMul(const GraphDef& graph, const NodeDef* start,
     if (!node) continue;
     if (visited.insert(node->name()).second == false) continue;
 
-    if (IsOp(*node, "BatchMatMulV2") || IsOp(*node, "BatchMatMul")) {
+    if (IsOp(*node, "BatchMatMulV2") || IsOp(*node, "BatchMatMul") || IsOp(*node, "MatMul")) {
       *out_bm = node;
       return true;
     }
@@ -84,7 +84,7 @@ static bool TryFindBatchMatMul(const GraphDef& graph, const NodeDef* start,
           IsOp(*p, "Erfc") || IsOp(*p, "RealDiv") || IsOp(*p, "Div") ||
           IsOp(*p, "Tanh") || IsOp(*p, "Pow") || IsOp(*p, "Neg") ||
           IsOp(*p, "Sqrt") || IsOp(*p, "BatchMatMulV2") ||
-          IsOp(*p, "BatchMatMul")) {
+          IsOp(*p, "BatchMatMul") || IsOp(*p, "MatMul")) {
         stack.push_back(p);
       }
     }
