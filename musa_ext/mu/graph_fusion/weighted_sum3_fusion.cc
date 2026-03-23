@@ -222,7 +222,8 @@ Status MusaWeightedSum3Fusion::Apply(
 
   // Create fused node (with the original output name)
   NodeDef* fused_node = graph->add_node();
-  fused_node->set_name(original_name + "_fused"); // Temporary name until original is removed
+  fused_node->set_name(original_name +
+                       "_fused");  // Temporary name until original is removed
   fused_node->set_op("MusaWeightedSum3");
   fused_node->set_device(output_device);
 
@@ -249,7 +250,7 @@ Status MusaWeightedSum3Fusion::Apply(
       removed_count++;
     }
   }
-  
+
   // Restore original name to the fused node
   fused_node->set_name(original_name);
 
