@@ -33,6 +33,13 @@ class MusaWeightedSum3Op : public MusaOpKernel {
 
     if (a.NumElements() == 0) return;
 
+    useKernel(ctx, a, b, c, alpha, beta, gamma, output);
+  }
+
+ private:
+  void useKernel(OpKernelContext* ctx, const Tensor& a, const Tensor& b,
+                 const Tensor& c, const Tensor& alpha, const Tensor& beta,
+                 const Tensor& gamma, Tensor* output) {
     auto& handle = GetHandleByCtx(ctx);
     musaStream_t stream = GetMusaStreamByCtx(ctx);
     LaunchWeightedSum3Kernel<T>(
@@ -40,6 +47,32 @@ class MusaWeightedSum3Op : public MusaOpKernel {
         alpha.flat<T>().data(), beta.flat<T>().data(), gamma.flat<T>().data(),
         output->flat<T>().data(), a.NumElements(), stream);
   }
+
+  // void useMudnn(OpKernelContext* ctx, const Tensor& a, const Tensor& b,
+  //               const Tensor& c, const Tensor& alpha, const Tensor& beta,
+  //               const Tensor& gamma, Tensor* output) {
+  //   auto& handle = GetHandleByCtx(ctx);
+  //   mTensor a_mt = CreateMTensor(a);
+  //   mTensor b_mt = CreateMTensor(b);
+  //   mTensor c_mt = CreateMTensor(c);
+
+  //   Tensor* temp;
+  //   OP_REQUIRES_OK(ctx, ctx->allocate_output(0, a.shape(), &temp));
+  //   mTensor temp_mt = CreateMTensor(*temp);
+
+  //   // Perform output = alpha * a + beta * b + gamma * c
+  //   mBinary op;
+  //   MTOP_CHECK_OK(op.SetMode(mBinary::Mode::ADD), "Set Add Mode", ctx);
+  //   MTOP_CHECK_OK(op.SetAlpha(alpha.flat<T>().data()[0]), "Set Alpha", ctx);
+  //   MTOP_CHECK_OK(op.SetBeta(beta.flat<T>().data()[0]), "Set Beta", ctx);
+  //   MTOP_CHECK_OK_RUN(op.Run(handle, temp_mt, a_mt, b_mt), "Add Forward Run",
+  //                     ctx);
+
+  //   mTensor output_mt = CreateMTensor(*output);
+  //   MTOP_CHECK_OK(op.SetAlpha(gamma.flat<T>().data()[0]), "Set Gamma", ctx);
+  //   MTOP_CHECK_OK_RUN(op.Run(handle, output_mt, temp_mt, c_mt),
+  //                     "Add Gamma Forward Run", ctx);
+  // }
 };
 
 #define REGISTER_WEIGHTED_SUM3_KERNEL(TYPE)                              \

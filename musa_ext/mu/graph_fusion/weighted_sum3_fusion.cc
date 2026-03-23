@@ -220,25 +220,9 @@ Status MusaWeightedSum3Fusion::Apply(
   VLOG(2) << "MusaWeightedSum3Fusion: will remove " << fuse_node_names.size()
           << " nodes";
 
-  int removed_count = 0;
-  for (auto it = fuse_node_names.begin(); it != fuse_node_names.end();) {
-    int idx = FusionGraphUtils::FindNodeIndex(*graph, *it);
-    if (idx >= 0) {
-      VLOG(2) << "MusaWeightedSum3Fusion: Removing node: "
-              << graph->node(idx).name();
-      FusionGraphUtils::RemoveNode(graph, idx);
-      removed_count++;
-      it = fuse_node_names.erase(it);
-    } else {
-      ++it;
-    }
-  }
-
-  VLOG(2) << "MusaWeightedSum3Fusion: removed " << removed_count << " nodes";
-
   // Create fused node (with the original output name)
   NodeDef* fused_node = graph->add_node();
-  fused_node->set_name(original_name);
+  fused_node->set_name(original_name + "_fused"); // Temporary name until original is removed
   fused_node->set_op("MusaWeightedSum3");
   fused_node->set_device(output_device);
 
@@ -248,6 +232,28 @@ Status MusaWeightedSum3Fusion::Apply(
   if (!data2.empty()) fused_node->add_input(data2);
 
   // weight (scalar) inputs: alpha, beta, gamma
+  if (!w0.empty()) fused_node->add_input(w0);
+  if (!w1.empty()) fused_node->add_input(w1);
+  if (!w2.empty()) fused_node->add_input(w2);
+
+  // Redirect consumers of the original output node to the new fused node
+  FusionGraphUtils::RedirectInputs(graph, original_name, fused_node->name());
+
+  // Now safely remove original nodes.
+  int removed_count = 0;
+  for (const auto& node_name : fuse_node_names) {
+    int idx = FusionGraphUtils::FindNodeIndex(*graph, node_name);
+    if (idx >= 0) {
+      VLOG(2) << "MusaWeightedSum3Fusion: Removing node: " << node_name;
+      FusionGraphUtils::RemoveNode(graph, idx);
+      removed_count++;
+    }
+  }
+  
+  // Restore original name to the fused node
+  fused_node->set_name(original_name);
+
+  VLOG(2) << "MusaWeightedSum3Fusion: removed " << removed_count << " nodes";
   if (!w0.empty()) fused_node->add_input(w0);
   if (!w1.empty()) fused_node->add_input(w1);
   if (!w2.empty()) fused_node->add_input(w2);
