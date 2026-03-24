@@ -64,7 +64,8 @@ static bool TryFindBatchMatMul(const GraphDef& graph, const NodeDef* start,
     if (!node) continue;
     if (visited.insert(node->name()).second == false) continue;
 
-    if (IsOp(*node, "BatchMatMulV2") || IsOp(*node, "BatchMatMul") || IsOp(*node, "MatMul")) {
+    if (IsOp(*node, "BatchMatMulV2") || IsOp(*node, "BatchMatMul") ||
+        IsOp(*node, "MatMul")) {
       *out_bm = node;
       return true;
     }
@@ -125,34 +126,47 @@ FusionMatchResult MusaPerTokenFFNFusion::Match(const GraphDef& graph,
   };
   if (has_original_suffix(start_node.name())) return result;
 
-  // Try to find two branches that reach underlying BatchMatMul nodes.
+  // Try to find a MatMul/BMM that produces the start node's output (bm1),
+  // then walk upstream from bm1 to find an earlier MatMul/BMM (bm0)
   const NodeDef* bm0 = nullptr;
   const NodeDef* bm1 = nullptr;
   std::vector<const NodeDef*> chain0;
   std::vector<const NodeDef*> chain1;
 
+  // Find bm1: a MatMul/BatchMatMul producer feeding the output Add/BiasAdd
   for (int i = 0; i < start_node.input_size(); ++i) {
     const NodeDef* inp = FindProducer(graph, start_node.input(i));
     if (!inp) continue;
-
     const NodeDef* found_bm = nullptr;
     std::vector<const NodeDef*> chain;
     if (TryFindBatchMatMul(graph, inp, &found_bm, &chain)) {
-      if (!bm0) {
+      bm1 = found_bm;
+      chain1 = chain;
+      break;
+    }
+  }
+
+  if (!bm1) return result;
+
+  // Find bm0 by looking at bm1's inputs (the activation branch)
+  for (int i = 0; i < bm1->input_size(); ++i) {
+    const NodeDef* inp = FindProducer(graph, bm1->input(i));
+    if (!inp) continue;
+    const NodeDef* found_bm = nullptr;
+    std::vector<const NodeDef*> chain;
+    if (TryFindBatchMatMul(graph, inp, &found_bm, &chain)) {
+      if (found_bm != bm1) {
         bm0 = found_bm;
         chain0 = chain;
-      } else if (!bm1) {
-        bm1 = found_bm;
-        chain1 = chain;
+        break;
       }
     }
   }
 
-  if (!bm0 || !bm1) return result;
-  if (bm0 == bm1) return result;
+  if (!bm0) return result;
 
-  // Build matched nodes list: include start node, both batch matmuls and the
-  // intermediate chains (which may include GELU-related nodes)
+  // Build matched nodes list: include start node, both matmuls and intermediate
+  // chains
   result.matched = true;
   result.matched_nodes.push_back(&start_node);
   result.matched_nodes.push_back(bm0);
@@ -164,7 +178,9 @@ FusionMatchResult MusaPerTokenFFNFusion::Match(const GraphDef& graph,
   result.captured_nodes["batch_matmul_0"] = bm0;
   result.captured_nodes["batch_matmul_1"] = bm1;
 
-  return result;
+  VLOG(INFO) << "Matched PerTokenFFN pattern with output node: "
+             << start_node.name() << ", batch_matmul_0: " << bm0->name()
+             << ", batch_matmul_1: " << bm1->name();
 
   return result;
 }
@@ -260,8 +276,16 @@ tensorflow::Status MusaPerTokenFFNFusion::Apply(
 
   FusionGraphUtils::RemoveNodesIfUnused(graph, removable, protected_names);
 
+  VLOG(INFO) << "Applied PerTokenFFN fusion, removed " << removable.size()
+             << " nodes";
+
   return tensorflow::Status::OK();
 }
+
+// Register the pattern
+REGISTER_FUSION_PATTERN(MusaPerTokenFFNFusion);
+// Register kernel availability
+REGISTER_FUSION_KERNEL(MusaPerTokenFFNFusion, []() { return true; });
 
 }  // namespace musa_fusion
 }  // namespace grappler

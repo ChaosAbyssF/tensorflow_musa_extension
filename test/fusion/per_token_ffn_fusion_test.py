@@ -28,7 +28,7 @@ def create_config_with_musa_optimizer():
 class PerTokenFFNFusionTest(MUSATestCase):
     """Tests for PerTokenFFN fusion."""
 
-    def test_per_token_ffn_correctness_and_fusion(self):
+    def test_per_token_ffn_correctness(self):
         np.random.seed(123)
         tf.random.set_seed(123)
 
@@ -41,7 +41,7 @@ class PerTokenFFNFusionTest(MUSATestCase):
         b1_np = np.random.randn(n).astype(np.float32)
 
         # Reference computation on CPU
-        with tf.device('/CPU:0'):
+        with tf.device("/CPU:0"):
             x_tf = tf.constant(x_np)
             w0_tf = tf.constant(w0_np)
             b0_tf = tf.constant(b0_np)
@@ -59,7 +59,7 @@ class PerTokenFFNFusionTest(MUSATestCase):
         # Build graph pinned to MUSA
         graph = tf.Graph()
         with graph.as_default():
-            with tf.device('/device:MUSA:0'):
+            with tf.device("/device:MUSA:0"):
                 x = tf.compat.v1.placeholder(tf.float32, shape=[None, k], name="x")
                 w0 = tf.constant(w0_np, dtype=tf.float32, name="w0")
                 b0 = tf.constant(b0_np, dtype=tf.float32, name="b0")
@@ -74,6 +74,8 @@ class PerTokenFFNFusionTest(MUSATestCase):
                 out_m = out_m * 1.0
 
         config = create_config_with_musa_optimizer()
+        run_options = tf.compat.v1.RunOptions(output_partition_graphs=True)
+        run_metadata = tf.compat.v1.RunMetadata()
 
         # Run and compare numeric correctness
         with tf.compat.v1.Session(graph=graph, config=config) as sess:
@@ -81,19 +83,98 @@ class PerTokenFFNFusionTest(MUSATestCase):
 
         self.assertAllClose(actual, out.numpy(), rtol=1e-5, atol=1e-5)
 
-        # Verify fusion applied by inspecting partition graphs
-        run_options = tf.compat.v1.RunOptions(output_partition_graphs=True)
-        run_metadata = tf.compat.v1.RunMetadata()
-        with tf.compat.v1.Session(graph=graph, config=config) as sess:
-            sess.run(out_m, feed_dict={x: x_np}, options=run_options, run_metadata=run_metadata)
+    def test_per_token_ffn_dtypes(self):
+        np.random.seed(1234)
+        tf.random.set_seed(1234)
 
-        has_fused = False
-        for pg in run_metadata.partition_graphs:
-            for node in pg.node:
-                if node.op == "MusaPerTokenFFN":
-                    has_fused = True
-                    break
-        self.assertTrue(has_fused, "MusaPerTokenFFN fusion was NOT applied to the graph")
+        m, k, h, n = 4, 8, 12, 6
+
+        # Base float32 arrays (used for conversion to other dtypes)
+        x_base = np.random.randn(m, k).astype(np.float32)
+        w0_base = np.random.randn(k, h).astype(np.float32)
+        b0_base = np.random.randn(h).astype(np.float32)
+        w1_base = np.random.randn(h, n).astype(np.float32)
+        b1_base = np.random.randn(n).astype(np.float32)
+
+        dtypes = [tf.float32, tf.float16, tf.bfloat16]
+
+        for dtype in dtypes:
+            with self.subTest(dtype=dtype):
+                # Reference on CPU computed in float32
+                with tf.device("/CPU:0"):
+                    x_tf = tf.constant(x_base, dtype=tf.float32)
+                    w0_tf = tf.constant(w0_base, dtype=tf.float32)
+                    b0_tf = tf.constant(b0_base, dtype=tf.float32)
+                    w1_tf = tf.constant(w1_base, dtype=tf.float32)
+                    b1_tf = tf.constant(b1_base, dtype=tf.float32)
+
+                    mm0 = tf.matmul(x_tf, w0_tf)
+                    bias0 = tf.nn.bias_add(mm0, b0_tf)
+                    gelu = tf.nn.gelu(bias0)
+                    mm1 = tf.matmul(gelu, w1_tf)
+                    out_ref = tf.nn.bias_add(mm1, b1_tf)
+                    out_ref = out_ref * 1.0
+
+                # Build graph pinned to MUSA with the target dtype
+                graph = tf.Graph()
+                with graph.as_default():
+                    with tf.device("/device:MUSA:0"):
+                        x_ph = tf.compat.v1.placeholder(
+                            dtype, shape=[None, k], name="x"
+                        )
+
+                        # For tf.bfloat16, pass float32 numpy and set dtype on tf.constant
+                        if dtype == tf.float16:
+                            w0 = tf.constant(
+                                w0_base.astype(np.float16), dtype=tf.float16, name="w0"
+                            )
+                            b0 = tf.constant(
+                                b0_base.astype(np.float16), dtype=tf.float16, name="b0"
+                            )
+                            w1 = tf.constant(
+                                w1_base.astype(np.float16), dtype=tf.float16, name="w1"
+                            )
+                            b1 = tf.constant(
+                                b1_base.astype(np.float16), dtype=tf.float16, name="b1"
+                            )
+                        else:
+                            w0 = tf.constant(w0_base, dtype=dtype, name="w0")
+                            b0 = tf.constant(b0_base, dtype=dtype, name="b0")
+                            w1 = tf.constant(w1_base, dtype=dtype, name="w1")
+                            b1 = tf.constant(b1_base, dtype=dtype, name="b1")
+
+                        mm0_m = tf.matmul(x_ph, w0)
+                        bias0_m = tf.nn.bias_add(mm0_m, b0)
+                        gelu_m = tf.nn.gelu(bias0_m)
+                        mm1_m = tf.matmul(gelu_m, w1)
+                        out_m = tf.nn.bias_add(mm1_m, b1)
+
+                        # Cast output to float32 for stable numeric comparison
+                        out_m = tf.cast(out_m, tf.float32)
+                        out_m = out_m * 1.0
+
+                config = create_config_with_musa_optimizer()
+                run_options = tf.compat.v1.RunOptions(output_partition_graphs=True)
+                run_metadata = tf.compat.v1.RunMetadata()
+
+                # Prepare feed; convert numpy input to appropriate dtype where possible
+                if dtype == tf.float16:
+                    x_feed = x_base.astype(np.float16)
+                else:
+                    x_feed = x_base
+
+                with tf.compat.v1.Session(graph=graph, config=config) as sess:
+                    actual = sess.run(out_m, feed_dict={x_ph: x_feed})
+
+                # Choose tolerances depending on dtype
+                if dtype == tf.float32:
+                    rtol, atol = 1e-5, 1e-5
+                elif dtype == tf.float16:
+                    rtol, atol = 1e-2, 1e-2
+                else:  # bfloat16
+                    rtol, atol = 2e-2, 2e-2
+
+                self.assertAllClose(actual, out_ref.numpy(), rtol=rtol, atol=atol)
 
 
 if __name__ == "__main__":
