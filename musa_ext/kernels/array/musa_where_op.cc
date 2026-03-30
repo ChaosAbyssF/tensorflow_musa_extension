@@ -8,6 +8,7 @@
 #include "tensorflow/core/framework/bfloat16.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/types.h"
+#include "utils/logging.h"
 
 namespace tensorflow {
 namespace musa {
@@ -18,6 +19,8 @@ class MusaWhereOp : public MusaOpKernel {
   explicit MusaWhereOp(OpKernelConstruction* ctx) : MusaOpKernel(ctx) {}
 
   void Compute(OpKernelContext* context) override {
+    MUSA_KERNEL_TIMING_GUARD(context);
+    MUSA_KERNEL_TRACE_START("MusaWhereOp");
     const Tensor& input = context->input(0);
     const int input_dims = input.dims();
     if (input.NumElements() == 0) {
@@ -33,6 +36,7 @@ class MusaWhereOp : public MusaOpKernel {
     } else {
       ComputeType<int64_t>(context, input, input_dims);
     }
+    MUSA_KERNEL_TRACE_END("MusaWhereOp");
   }
 
   template <typename Tindex>
