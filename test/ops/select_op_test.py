@@ -67,7 +67,7 @@ class SelectOpTest(MUSATestCase):
         cond = np.array([True, False, True])
         x = np.array([True, True, True])
         y = np.array([False, False, False])
-        
+
         # Bool 类型使用默认容差即可
         # 验证 bool 类型的 Select 操作是否正确
         self._compare_cpu_musa_results(

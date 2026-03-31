@@ -6,7 +6,6 @@
 #include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/framework/resource_var.h"
 #include "tensorflow/core/lib/core/notification.h"
-#include "../utils_op.h"
 
 namespace tensorflow {
 namespace musa {
