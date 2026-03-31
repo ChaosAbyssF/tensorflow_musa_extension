@@ -23,6 +23,7 @@ class ConcatMatMulFusion : public FusionPattern {
   Status Apply(GraphDef* graph,
                const FusionMatchResult& match_result) const override;
 
+  // Make way for more specific patterns
   int GetPriority() const override { return 60; }
 
   bool IsKernelAvailable() const override;
