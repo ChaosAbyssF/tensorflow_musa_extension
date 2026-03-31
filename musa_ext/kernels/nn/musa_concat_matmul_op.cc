@@ -22,10 +22,22 @@ class MusaConcatMatMulOp : public MusaOpKernel {
     OP_REQUIRES_OK(ctx, ctx->GetAttr("transpose_b", &trans_b_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("num_concat", &num_concat_));
     OP_REQUIRES_OK(ctx, ctx->GetAttr("concat_input_idx", &concat_input_idx_));
+
+    static bool tf32_enabled_global = []() {
+      const char* tf32_env = std::getenv("MUSA_ENABLE_TF32");
+      if (tf32_env) {
+        return std::atoi(tf32_env) != 0;
+      }
+      return false;  // Default: TF32 disabled for higher precision
+    }();
+    tf32_enabled_ = tf32_enabled_global;
   }
 
   void Compute(OpKernelContext* ctx) override {
     MUSA_KERNEL_TIMING_GUARD(ctx);
+
+    auto& handle = GetHandleByCtx(ctx);
+    handle.SetAllowTF32(tf32_enabled_);
 
     // 1. Get axis and concat inputs
     const Tensor& axis_tensor = ctx->input(num_concat_);
@@ -60,7 +72,6 @@ class MusaConcatMatMulOp : public MusaOpKernel {
     OP_REQUIRES_OK(
         ctx, ctx->allocate_temp(ref.dtype(), concat_shape, &concat_out_tensor));
 
-    auto& handle = GetHandleByCtx(ctx);
     std::vector<::musa::dnn::Tensor> mudnn_ins;
     for (int i = 0; i < num_concat_; ++i) {
       if (ctx->input(i).NumElements() > 0) {
@@ -122,6 +133,7 @@ class MusaConcatMatMulOp : public MusaOpKernel {
   bool trans_b_ = false;
   int num_concat_ = 0;
   int concat_input_idx_ = 0;
+  bool tf32_enabled_ = false;
 };
 
 #define REGISTER_MUSA_CONCAT_MATMUL(TYPE)                \
