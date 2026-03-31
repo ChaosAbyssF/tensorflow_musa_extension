@@ -95,7 +95,7 @@ class ConcatMatMulFusionTest(MUSATestCase):
 
     def test_concat_matmul_fusion_float16(self):
         self._test_concat_matmul_fusion(dtype=tf.float16, rtol=1e-3, atol=1e-3)
-        
+
     def test_concat_matmul_fusion_bfloat16(self):
         self._test_concat_matmul_fusion(dtype=tf.bfloat16, rtol=1e-2, atol=1e-2)
 
