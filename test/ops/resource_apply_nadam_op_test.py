@@ -80,12 +80,12 @@ class ResourceApplyNadamOpTest(MUSATestCase):
                     # var = var - lr * m_hat / (sqrt(v_hat) + epsilon)
                     m_new = beta1 * m + (1 - beta1) * grad
                     v_new = beta2 * v + (1 - beta2) * tf.square(grad)
-                    
+
                     m_hat = (beta1 * m_new + (1 - beta1) * grad) / (1 - beta1_power)
                     v_hat = v_new / (1 - beta2_power)
-                    
+
                     var_new = var - lr * m_hat / (tf.sqrt(v_hat) + epsilon)
-                    
+
                     var.assign(var_new)
                     m.assign(m_new)
                     v.assign(v_new)

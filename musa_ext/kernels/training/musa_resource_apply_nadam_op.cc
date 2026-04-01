@@ -108,7 +108,8 @@ class MusaResourceApplyNadamOp : public MusaOpKernel {
     MUSA_KERNEL_TRACE_START("NadamKernel");
     UseMudnn(ctx, var_t, m_t, v_t, grad, beta1_power, beta2_power, lr, beta1,
              beta2, epsilon);
-    // UseKernel(ctx, var_t, m_t, v_t, grad, beta1_power, beta2_power, lr, beta1,
+    // UseKernel(ctx, var_t, m_t, v_t, grad, beta1_power, beta2_power, lr,
+    // beta1,
     //           beta2, epsilon);
     MUSA_KERNEL_TRACE_END("NadamKernel");
   }
