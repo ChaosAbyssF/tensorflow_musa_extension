@@ -214,7 +214,8 @@ Status MusaSafeClipFusion::Apply(GraphDef* graph,
   *new_graph.add_node() = std::move(fused_node);
   graph->Swap(&new_graph);
 
-  // LOG(INFO) << "Fusion: " << GetName() << " applied to " << select_node->name();
+  // LOG(INFO) << "Fusion: " << GetName() << " applied to " <<
+  // select_node->name();
 
   return Status::OK();
 }
