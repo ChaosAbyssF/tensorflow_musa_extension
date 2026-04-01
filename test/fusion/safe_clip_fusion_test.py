@@ -53,7 +53,7 @@ class SafeClipFusionE2ETest(MUSATestCase):
         # values < lo -> lo
         # values > hi -> hi
         # lo <= values <= hi -> values
-        
+
         # Calculate expected using numpy
         clip_val = np.maximum(np.minimum(x_np, hi_np), lo_np)
         expected = np.where(np.isnan(x_np), np.zeros_like(x_np), clip_val)
@@ -95,10 +95,10 @@ class SafeClipFusionE2ETest(MUSATestCase):
         x_np = np.array([-1.0, 0.0, 1.0, np.nan, 2.0, 3.0], dtype=np.float32)
         lo_np = np.float32(0.5)
         hi_np = np.float32(2.5)
-        
+
         fused_nodes = self._run_safe_clip_fusion_test(x_np, lo_np, hi_np, tf.float32)
-        
-        # Currently, the fusion might be failing in the current environment due to 
+
+        # Currently, the fusion might be failing in the current environment due to
         # how tf.where/tf.zeros are lowered. This test will help identify that.
         self.assertTrue(
             len(fused_nodes) > 0,
@@ -141,4 +141,3 @@ class SafeClipFusionE2ETest(MUSATestCase):
 
 if __name__ == "__main__":
     tf.test.main()
-

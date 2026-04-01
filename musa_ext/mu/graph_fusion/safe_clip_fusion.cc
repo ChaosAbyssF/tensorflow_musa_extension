@@ -58,7 +58,8 @@ FusionMatchResult MusaSafeClipFusion::Match(const GraphDef& graph,
   }
 
   const NodeDef& select_node = graph.node(start_node_idx);
-  if ((!IsOp(select_node, "Select") && !IsOp(select_node, "SelectV2")) || select_node.input_size() != 3) {
+  if ((!IsOp(select_node, "Select") && !IsOp(select_node, "SelectV2")) ||
+      select_node.input_size() != 3) {
     return result;
   }
 
@@ -76,7 +77,8 @@ FusionMatchResult MusaSafeClipFusion::Match(const GraphDef& graph,
 
   // 3. else_value: Maximum (part of Clip)
   const NodeDef* maximum_node = FindProducer(graph, select_node.input(2));
-  if (!maximum_node || !IsOp(*maximum_node, "Maximum") || maximum_node->input_size() != 2) {
+  if (!maximum_node || !IsOp(*maximum_node, "Maximum") ||
+      maximum_node->input_size() != 2) {
     return result;
   }
 
@@ -98,11 +100,13 @@ FusionMatchResult MusaSafeClipFusion::Match(const GraphDef& graph,
   const NodeDef* x_node = nullptr;
   for (int i = 0; i < 2; ++i) {
     const NodeDef* prod = FindProducer(graph, minimum_node->input(i));
-    if (prod && (prod->name() == isnan_node->input(0) || 
-                 FusionGraphUtils::GetProducerNodeName(minimum_node->input(i)) == FusionGraphUtils::GetProducerNodeName(isnan_node->input(0)))) {
-       x_node = prod;
+    if (prod &&
+        (prod->name() == isnan_node->input(0) ||
+         FusionGraphUtils::GetProducerNodeName(minimum_node->input(i)) ==
+             FusionGraphUtils::GetProducerNodeName(isnan_node->input(0)))) {
+      x_node = prod;
     } else {
-       hi_node = prod;
+      hi_node = prod;
     }
   }
   if (!x_node || !hi_node) return result;
@@ -114,12 +118,12 @@ FusionMatchResult MusaSafeClipFusion::Match(const GraphDef& graph,
   result.matched_nodes.push_back(zero_node);
   result.matched_nodes.push_back(maximum_node);
   result.matched_nodes.push_back(minimum_node);
-  
+
   result.captured_nodes["x"] = x_node;
   result.captured_nodes["lo"] = lo_node;
   result.captured_nodes["hi"] = hi_node;
   result.captured_nodes["select"] = &select_node;
-  
+
   result.captured_nodes["isnan"] = isnan_node;
   result.captured_nodes["maximum"] = maximum_node;
   result.captured_nodes["minimum"] = minimum_node;
@@ -137,7 +141,7 @@ Status MusaSafeClipFusion::Apply(GraphDef* graph,
   const NodeDef* x_node = match_result.captured_nodes.at("x");
   const NodeDef* lo_node = match_result.captured_nodes.at("lo");
   const NodeDef* hi_node = match_result.captured_nodes.at("hi");
-  
+
   const NodeDef* isnan_node = match_result.captured_nodes.at("isnan");
   const NodeDef* maximum_node = match_result.captured_nodes.at("maximum");
   const NodeDef* minimum_node = match_result.captured_nodes.at("minimum");
@@ -150,13 +154,15 @@ Status MusaSafeClipFusion::Apply(GraphDef* graph,
   // We need to find the correct input strings (including :0 etc)
   fused_node.add_input(isnan_node->input(0));
   // Find which input of maximum is minimum, and use the OTHER one as lo
-  if (FusionGraphUtils::GetProducerNodeName(maximum_node->input(0)) == minimum_node->name()) {
+  if (FusionGraphUtils::GetProducerNodeName(maximum_node->input(0)) ==
+      minimum_node->name()) {
     fused_node.add_input(maximum_node->input(1));
   } else {
     fused_node.add_input(maximum_node->input(0));
   }
   // Find which input of minimum is x, and use the OTHER one as hi
-  if (FusionGraphUtils::GetProducerNodeName(minimum_node->input(0)) == x_node->name()) {
+  if (FusionGraphUtils::GetProducerNodeName(minimum_node->input(0)) ==
+      x_node->name()) {
     fused_node.add_input(minimum_node->input(1));
   } else {
     fused_node.add_input(minimum_node->input(0));
@@ -171,7 +177,7 @@ Status MusaSafeClipFusion::Apply(GraphDef* graph,
   for (const auto* node : match_result.matched_nodes) {
     nodes_to_remove.insert(node->name());
   }
-  
+
   GraphDef new_graph;
   for (int i = 0; i < graph->node_size(); ++i) {
     if (nodes_to_remove.count(graph->node(i).name()) == 0) {
