@@ -106,8 +106,6 @@ class MusaResourceApplyNadamOp : public MusaOpKernel {
     const Tensor& grad = ctx->input(9);
 
     MUSA_KERNEL_TRACE_START("NadamKernel");
-    // UseMudnn(ctx, var_t, m_t, v_t, grad, beta1_power, beta2_power, lr, beta1,
-    //          beta2, epsilon);
     UseKernel(ctx, var_t, m_t, v_t, grad, beta1_power, beta2_power, lr, beta1,
               beta2, epsilon);
     MUSA_KERNEL_TRACE_END("NadamKernel");
