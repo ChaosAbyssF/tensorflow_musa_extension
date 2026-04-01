@@ -22,6 +22,7 @@ from tensorflow.core.protobuf import config_pb2
 
 tf.compat.v1.disable_eager_execution()
 
+
 def create_config_with_musa_optimizer():
     """Create ConfigProto with MUSA optimizer enabled."""
     config = config_pb2.ConfigProto()
@@ -70,12 +71,12 @@ class SafeClipFusionE2ETest(MUSATestCase):
                 # where Maximum = Maximum(Minimum(x, hi), lo)
                 min_op = tf.minimum(x, hi)
                 max_op = tf.maximum(min_op, lo)
-                
+
                 # Based on the provide image, IsNan and Shape/Fill depend on max_op
                 isnan = tf.math.is_nan(max_op)
                 shape = tf.shape(max_op)
                 zero_fill = tf.fill(shape, tf.constant(0.0, dtype=dtype))
-                
+
                 # Select node
                 output = tf.compat.v1.where(isnan, zero_fill, max_op)
 
@@ -98,7 +99,7 @@ class SafeClipFusionE2ETest(MUSATestCase):
     def test_safe_clip_fusion_is_applied(self):
         """Specifically check if the fusion happens."""
         x_np = np.array([-1.0, 0.0, 1.0, np.nan, 2.0, 3.0], dtype=np.float32)
-        lo_np = np.float32(0.5)
+        lo_np = np.float32(-0.5)
         hi_np = np.float32(2.5)
 
         fused_nodes = self._run_safe_clip_fusion_test(x_np, lo_np, hi_np, tf.float32)
@@ -111,7 +112,9 @@ class SafeClipFusionE2ETest(MUSATestCase):
         )
 
     def test_safe_clip_fusion_fp32(self):
-        x_np = np.array([-1.0, 0.0, 1.0, np.nan, 2.0, 3.0, np.inf, -np.inf], dtype=np.float32)
+        x_np = np.array(
+            [-1.0, 0.0, 1.0, np.nan, 2.0, 3.0, np.inf, -np.inf], dtype=np.float32
+        )
         lo_np = np.float32(0.5)
         hi_np = np.float32(2.5)
         self._run_safe_clip_fusion_test(x_np, lo_np, hi_np, tf.float32)

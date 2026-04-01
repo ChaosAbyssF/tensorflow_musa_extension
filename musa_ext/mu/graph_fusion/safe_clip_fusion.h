@@ -35,7 +35,7 @@ class MusaSafeClipFusion : public FusionPattern {
                const FusionMatchResult& match_result) const override;
 
   int GetPriority() const override {
-    return 110;
+    return 150;
   }  // Higher than MusaClipFusion
   bool IsKernelAvailable() const override;
   std::string GetName() const override { return "MusaSafeClipFusion"; }

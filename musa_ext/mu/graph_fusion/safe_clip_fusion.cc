@@ -71,34 +71,56 @@ FusionMatchResult MusaSafeClipFusion::Match(const GraphDef& graph,
 
   // 2. then_value: Fill(0) or Const(0)
   const NodeDef* zero_node = FindProducer(graph, select_node.input(1));
-  if (!zero_node || (!IsOp(*zero_node, "Fill") && !IsOp(*zero_node, "Const"))) {
+  if (!zero_node) {
+    return result;
+  }
+  if (!IsOp(*zero_node, "Fill") && !IsOp(*zero_node, "Const")) {
     return result;
   }
 
   // 3. else_value: Maximum (part of Clip)
   const NodeDef* maximum_node = FindProducer(graph, select_node.input(2));
-  if (!maximum_node || !IsOp(*maximum_node, "Maximum") ||
-      maximum_node->input_size() != 2) {
+  if (!maximum_node) return result;
+  if ((!IsOp(*maximum_node, "Maximum") && !IsOp(*maximum_node, "MusaClip")) ||
+      maximum_node->input_size() < 2) {
     return result;
   }
 
   // 4. Maximum inputs: Minimum and lo
   const NodeDef* minimum_node = nullptr;
   const NodeDef* lo_node = nullptr;
-  for (int i = 0; i < 2; ++i) {
-    const NodeDef* prod = FindProducer(graph, maximum_node->input(i));
-    if (prod && IsOp(*prod, "Minimum")) {
-      minimum_node = prod;
-    } else {
-      lo_node = prod;
+  if (IsOp(*maximum_node, "MusaClip")) {
+    // MusaClip(x, lo, hi)
+    // Success Match
+    result.matched = true;
+    result.matched_nodes.push_back(&select_node);
+    result.matched_nodes.push_back(isnan_node);
+    result.matched_nodes.push_back(zero_node);
+    result.matched_nodes.push_back(maximum_node);
+
+    result.captured_nodes["select"] = &select_node;
+    result.captured_nodes["isnan"] = isnan_node;
+    result.captured_nodes["maximum"] = maximum_node;
+    return result;
+  } else {
+    for (int i = 0; i < maximum_node->input_size(); ++i) {
+      const NodeDef* prod = FindProducer(graph, maximum_node->input(i));
+      if (prod && IsOp(*prod, "Minimum")) {
+        minimum_node = prod;
+      } else {
+        lo_node = prod;
+      }
     }
   }
-  if (!minimum_node || !lo_node) return result;
+
+  if (!minimum_node || !lo_node) {
+    return result;
+  }
 
   // 5. Minimum inputs: x and hi
   const NodeDef* hi_node = nullptr;
   const NodeDef* x_node = nullptr;
-  for (int i = 0; i < 2; ++i) {
+  for (int i = 0; i < minimum_node->input_size(); ++i) {
     const NodeDef* prod = FindProducer(graph, minimum_node->input(i));
     if (prod &&
         (prod->name() == isnan_node->input(0) ||
@@ -109,7 +131,9 @@ FusionMatchResult MusaSafeClipFusion::Match(const GraphDef& graph,
       hi_node = prod;
     }
   }
-  if (!x_node || !hi_node) return result;
+  if (!x_node || !hi_node) {
+    return result;
+  }
 
   // Success Match
   result.matched = true;
@@ -138,13 +162,8 @@ Status MusaSafeClipFusion::Apply(GraphDef* graph,
   }
 
   const NodeDef* select_node = match_result.captured_nodes.at("select");
-  const NodeDef* x_node = match_result.captured_nodes.at("x");
-  const NodeDef* lo_node = match_result.captured_nodes.at("lo");
-  const NodeDef* hi_node = match_result.captured_nodes.at("hi");
-
   const NodeDef* isnan_node = match_result.captured_nodes.at("isnan");
   const NodeDef* maximum_node = match_result.captured_nodes.at("maximum");
-  const NodeDef* minimum_node = match_result.captured_nodes.at("minimum");
 
   NodeDef fused_node;
   fused_node.set_name(select_node->name());
@@ -153,19 +172,27 @@ Status MusaSafeClipFusion::Apply(GraphDef* graph,
 
   // We need to find the correct input strings (including :0 etc)
   fused_node.add_input(isnan_node->input(0));
-  // Find which input of maximum is minimum, and use the OTHER one as lo
-  if (FusionGraphUtils::GetProducerNodeName(maximum_node->input(0)) ==
-      minimum_node->name()) {
-    fused_node.add_input(maximum_node->input(1));
+
+  if (IsOp(*maximum_node, "MusaClip")) {
+    fused_node.add_input(maximum_node->input(1));  // lo
+    fused_node.add_input(maximum_node->input(2));  // hi
   } else {
-    fused_node.add_input(maximum_node->input(0));
-  }
-  // Find which input of minimum is x, and use the OTHER one as hi
-  if (FusionGraphUtils::GetProducerNodeName(minimum_node->input(0)) ==
-      x_node->name()) {
-    fused_node.add_input(minimum_node->input(1));
-  } else {
-    fused_node.add_input(minimum_node->input(0));
+    // Find which input of maximum is minimum, and use the OTHER one as lo
+    const NodeDef* minimum_node = match_result.captured_nodes.at("minimum");
+    if (FusionGraphUtils::GetProducerNodeName(maximum_node->input(0)) ==
+        minimum_node->name()) {
+      fused_node.add_input(maximum_node->input(1));
+    } else {
+      fused_node.add_input(maximum_node->input(0));
+    }
+    const NodeDef* x_node = match_result.captured_nodes.at("x");
+    // Find which input of minimum is x, and use the OTHER one as hi
+    if (FusionGraphUtils::GetProducerNodeName(minimum_node->input(0)) ==
+        x_node->name()) {
+      fused_node.add_input(minimum_node->input(1));
+    } else {
+      fused_node.add_input(minimum_node->input(0));
+    }
   }
 
   if (select_node->attr().count("T")) {
@@ -186,6 +213,8 @@ Status MusaSafeClipFusion::Apply(GraphDef* graph,
   }
   *new_graph.add_node() = std::move(fused_node);
   graph->Swap(&new_graph);
+
+  // LOG(INFO) << "Fusion: " << GetName() << " applied to " << select_node->name();
 
   return Status::OK();
 }

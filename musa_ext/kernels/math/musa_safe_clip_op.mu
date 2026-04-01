@@ -123,10 +123,10 @@ void LaunchSafeClip(const musaStream_t stream, const T* x_ptr, const int n,
       <<<grid_size, block_size, 0, stream>>>(x_ptr, lo_ptr, hi_ptr, y_ptr, n);
 }
 
-#define DEFINE_SAFE_CLIP_FUNCTOR(T)                                           \
-  template void LaunchSafeClip<T>(const musaStream_t stream, const T* x_ptr,     \
-                               const int n, const T* lo_ptr, const T* hi_ptr, \
-                               T* y_ptr);
+#define DEFINE_SAFE_CLIP_FUNCTOR(T)                                          \
+  template void LaunchSafeClip<T>(const musaStream_t stream, const T* x_ptr, \
+                                  const int n, const T* lo_ptr,              \
+                                  const T* hi_ptr, T* y_ptr);
 
 DEFINE_SAFE_CLIP_FUNCTOR(float);
 DEFINE_SAFE_CLIP_FUNCTOR(double);
