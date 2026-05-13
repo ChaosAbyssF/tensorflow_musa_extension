@@ -1,32 +1,47 @@
-# TensorFlow MUSA Extension
+# TensorFlow MUSA Extension (TF 2.15 variant)
 
 面向摩尔线程（Moore Threads）MUSA GPU 的 TensorFlow 插件：通过 MUSA 内核与图优化为 TensorFlow 提供 GPU 加速。
+
+> **这是 TF 2.15 版本。** 原始 2.6.1 版本仓库位于 `../tensorflow_musa_extension/`。
+> 此目录是从 2.6.1 版本派生的脚手架移植 (scaffold port)，**尚未在 TF 2.15 上
+> 完成构建与验证**。详见 [PORTING.md](PORTING.md) 了解已完成的变更以及构建
+> 时预期会遇到的问题。同一份源代码理论上也可用于 TF 2.13 / 2.14，只需要把
+> `setup.py` 和 `build.sh` 里的 `REQUIRED_TF_VERSION` 改为对应版本号即可。
 
 ## 特性
 
 - 核心算子与常用融合路径的 MUSA 实现
 - Grappler 图优化（布局、融合、可选混合精度等）
 - Python 包 `tensorflow_musa`：自动加载插件与设备查询
+- bf16 / 混合精度专用优化：`MusaResourceApplyAdamMixed` op、fp32 内部累加的
+  bf16 Adam 路径、RNE bf16 取整、Sum/Mean/Prod 的 fp32 提升、AddV2/AddN/Mul
+  bf16 向量化快路径、bf16↔fp32 向量化 Cast 等
 - 可选遥测与调试说明见 [调试指南](docs/DEBUG_GUIDE.md)
 
 ## 环境要求
 
-- CMake ≥ 3.10，Make，GCC/G++（与 TensorFlow 2.6.1 wheel ABI 一致）
+- CMake ≥ 3.10，Make，GCC/G++ 11+（与 TensorFlow 2.15.x wheel ABI 一致）
 - MUSA SDK（默认路径 `/usr/local/musa`）：Runtime、muBLAS、muDNN
-- Python ≥ 3.7
-- **TensorFlow == 2.6.1**（须与此版本一致）
-- NumPy ≥ 1.19.0
+- Python ≥ 3.9（TF 2.15 不再支持 3.8）
+- **TensorFlow == 2.15.1**（须与此版本一致）
+- NumPy ≥ 1.23, < 2.0（TF 2.15 wheel 与 NumPy 2.x ABI 不兼容）
 
 ## 安装（推荐：Wheel）
 
 ```bash
 git clone <repository-url>
-cd tensorflow_musa_extension
+cd tensorflow_musa_extension_2.15
 
-pip install tensorflow==2.6.1
+pip install tensorflow==2.15.1
 ./build.sh wheel
 pip install dist/tensorflow_musa-*.whl --no-deps
 ```
+
+构建前请阅读 [PORTING.md](PORTING.md)，了解从 2.6.1 移植到 2.15 时已应用的
+变更，以及第一次构建可能遇到的问题（主要在 `musa_ext/mu/device/` 下的
+StreamExecutor 适配代码，因 TF 2.10-2.15 期间 PluggableDevice C++ API 有
+若干增减；以及 `Status::OK()` / `Status::error_message()` 在 TF 2.14+ 被
+deprecation 警告标记，但仍可正常编译运行）。
 
 重新构建后覆盖安装可加 `--force-reinstall`。
 
@@ -50,21 +65,7 @@ with tf.device("/device:MUSA:0"):
     b = tf.matmul(a, a)
 ```
 
-### Python 算子 API
-
-`tensorflow_musa` 提供两层自定义算子入口：
-
-- `tf_musa.ops`：稳定的高层 wrapper，如 `gelu`、`layer_norm`、`clip`、`dropout`、`reshape_mat_mul`、`matmul_bias_add` 等。
-- `tf_musa.raw_ops`：动态代理到底层插件生成的全部 raw op，适合调试或调用暂未封装到 `ops` 的算子。
-
-```python
-import tensorflow as tf
-import tensorflow_musa as tf_musa
-
-x = tf.constant([-2.0, 0.5, 3.0])
-y = tf_musa.ops.clip(x, 0.0, 1.0)
-z = tf_musa.ops.gelu(y)
-```
+### MUSA 显存按需增长
 
 `tensorflow_musa` 支持控制 MUSA BFC allocator 的 `allow_growth` 行为。默认值与 TensorFlow 原生 GPU 保持一致，为 `False`；启用后，MUSA 显存池会按需增长，而不是在设备初始化时一次性申请完整显存池。请在 MUSA 设备初始化前设置：
 
@@ -84,29 +85,6 @@ tf_musa.set_musa_allow_growth(enabled=False)
 
 ```bash
 export TF_FORCE_GPU_ALLOW_GROWTH=true
-```
-
-### MUSA 遥测调试
-
-测试代码可以通过 Python 接口控制 C++ 遥测系统。接口配置会覆盖
-`MUSA_TELEMETRY_*` 环境变量：
-
-```python
-import tensorflow_musa as tf_musa
-
-tf_musa.set_musa_telemetry_config(
-    enabled=True,
-    log_path="/tmp/musa_telemetry.json",
-    buffer_size=50000,
-    flush_interval_ms=50,
-    include_stack_trace=True,
-)
-```
-
-关闭并刷新未写出的事件：
-
-```python
-tf_musa.disable_musa_telemetry()
 ```
 
 ### MUSA 自定义图优化器开关
@@ -134,24 +112,6 @@ tf_musa.disable_musa_graph_optimizer(config)
 ```python
 tf_musa.set_musa_graph_optimizer_enabled(config, enabled=True)
 tf_musa.set_musa_graph_optimizer_enabled(config, enabled=False)
-```
-
-图优化调试时，可以从 Python 打开 GraphDef dump。接口配置会覆盖
-`MUSA_DUMP_GRAPHDEF*` 环境变量：
-
-```python
-tf_musa.set_musa_graph_dump_config(
-    enabled=True,
-    dump_dir="/tmp/graphs",
-    dump_text=True,
-    dump_slim=True,
-)
-```
-
-关闭 dump：
-
-```python
-tf_musa.disable_musa_graph_dump()
 ```
 
 按名称关闭部分融合 pattern 时，可直接在 Python 配置里传参给 C++ 优化器：
