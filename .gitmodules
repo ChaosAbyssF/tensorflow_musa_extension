@@ -1,0 +1,3 @@
+[submodule "example/tokenmixerlarge"]
+	path = example/tokenmixerlarge
+	url = https://github.com/fay85/tokenmixerlarge.git
