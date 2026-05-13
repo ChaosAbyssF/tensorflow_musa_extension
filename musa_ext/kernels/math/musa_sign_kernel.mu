@@ -1,4 +1,5 @@
 #include <musa_runtime.h>
+#include <musa_bf16.h>
 #include <musa_fp16.h>
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wignored-pragmas"
@@ -38,11 +39,14 @@ namespace tensorflow
 
     __device__ __forceinline__ tensorflow::bfloat16 FloatToBfloat16(float f)
     {
-      uint32_t bits;
-      memcpy(&bits, &f, sizeof(float));
-      uint16_t raw = static_cast<uint16_t>(bits >> 16);
+      // RNE rounding via MUSA SDK intrinsic (was truncate-toward-zero bit
+      // shift). MusaSign emits {-1, 0, +1} for non-NaN inputs, all of which
+      // are exactly representable in bf16, so this fix is mostly cosmetic
+      // for the typical case but matters for any caller that compares
+      // signs of bf16 inputs near subnormals.
+      const __mt_bfloat16 b = __float2bfloat16(f);
       tensorflow::bfloat16 result;
-      memcpy(&result, &raw, sizeof(uint16_t));
+      memcpy(&result, &b, sizeof(uint16_t));
       return result;
     }
 

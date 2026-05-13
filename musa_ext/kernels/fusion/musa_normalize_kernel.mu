@@ -1,5 +1,6 @@
 #include <math.h>
 
+#include <musa_bf16.h>
 #include <musa_fp16.h>
 #include <musa_runtime.h>
 
@@ -41,9 +42,12 @@ __device__ __forceinline__ float LoadFloat(const bfloat16* p) {
 }
 
 __device__ __forceinline__ void StoreFloat(bfloat16* p, float v) {
-  uint32_t* f_ptr = (uint32_t*)&v;
-  uint16_t b_val = (*f_ptr) >> 16;
-  *reinterpret_cast<uint16_t*>(p) = b_val;
+  // RNE rounding via MUSA SDK intrinsic rather than truncate-toward-zero
+  // bit shift. Per-element single-pass error reduced from ~0.5 ULP biased
+  // to <= 0.5 ULP RNE; matters most in iterative accumulators (m/v in
+  // Adam/AdamW, running statistics in normalization layers).
+  const __mt_bfloat16 b = __float2bfloat16(v);
+  *reinterpret_cast<__mt_bfloat16*>(p) = b;
 }
 
 // Warp reduce for sum using 32-thread warp

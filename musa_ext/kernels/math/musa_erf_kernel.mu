@@ -73,9 +73,26 @@ __device__ __forceinline__ float LoadFloat(const bfloat16* p) {
 }
 
 __device__ __forceinline__ void StoreFloat(bfloat16* p, float v) {
-    const uint32_t* f_ptr = reinterpret_cast<const uint32_t*>(&v);
-    uint16_t b_val = static_cast<uint16_t>((*f_ptr) >> 16);
-    *reinterpret_cast<uint16_t*>(p) = b_val;
+#if TF_MUSA_HAS_BFLOAT16_INTRINSICS
+    // RNE rounding via MUSA SDK intrinsic. The pair-vectorized erf kernel
+    // already uses __floats2bfloat162_rn; this scalar fallback path was
+    // doing truncate-toward-zero bit shift, which produced ~0.5 ULP biased
+    // error per element. Match the pair path's rounding mode.
+    const __mt_bfloat16 b = __float2bfloat16(v);
+    *reinterpret_cast<__mt_bfloat16*>(p) = b;
+#else
+    // SDK does not expose __float2bfloat16. Fall back to manual RNE bit
+    // arithmetic: round-to-nearest, ties-to-even on bit 16. Slightly more
+    // expensive than the SDK intrinsic but still strictly better than the
+    // toward-zero truncation it replaces.
+    uint32_t bits;
+    __builtin_memcpy(&bits, &v, sizeof(bits));
+    const uint32_t lsb = (bits >> 16) & 1u;
+    const uint32_t rounding_bias = 0x7FFFu + lsb;
+    bits += rounding_bias;
+    const uint16_t bf16 = static_cast<uint16_t>(bits >> 16);
+    *reinterpret_cast<uint16_t*>(p) = bf16;
+#endif
 }
 
 template <typename T, int kILP>

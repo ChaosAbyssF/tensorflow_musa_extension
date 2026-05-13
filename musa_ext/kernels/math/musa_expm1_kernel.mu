@@ -21,6 +21,7 @@ limitations under the License.
  */
 
 #include <musa_runtime.h>
+#include <musa_bf16.h>
 #include <musa_fp16.h>
 #include <math.h>
 
@@ -57,9 +58,9 @@ __device__ __forceinline__ float LoadFloat(const bfloat16* p) {
 }
 
 __device__ __forceinline__ void StoreFloat(bfloat16* p, float v) {
-    uint32_t* f_ptr = reinterpret_cast<uint32_t*>(&v);
-    uint16_t b_val = *f_ptr >> 16;
-    *reinterpret_cast<uint16_t*>(p) = b_val;
+    // RNE rounding via MUSA SDK intrinsic (was truncate-toward-zero bit shift).
+    const __mt_bfloat16 b = __float2bfloat16(v);
+    *reinterpret_cast<__mt_bfloat16*>(p) = b;
 }
 
 /**

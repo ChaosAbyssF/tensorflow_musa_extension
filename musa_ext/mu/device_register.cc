@@ -4,7 +4,6 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
-#include <string>
 #include <vector>
 
 #include "device/musa_device.h"
@@ -15,7 +14,7 @@
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/logging.h"
 #include "tensorflow/core/public/session_options.h"
-#include "tensorflow/stream_executor/multi_platform_manager.h"
+#include "xla/stream_executor/multi_platform_manager.h"
 
 namespace tensorflow {
 void ForceMusaOptimizationPassRegistration();
@@ -70,13 +69,13 @@ class MusaDeviceFactory : public DeviceFactory {
     int count = 0;
     musaError_t err = musaGetDeviceCount(&count);
     if (err != musaSuccess) {
-      return Status::OK();
+      return Status();
     }
 
     for (int i = 0; i < count; ++i) {
       devices->push_back(strings::StrCat("/physical_device:MUSA:", i));
     }
-    return Status::OK();
+    return Status();
   }
 
   Status CreateDevices(const SessionOptions& options, const string& name_prefix,
@@ -93,7 +92,11 @@ class MusaDeviceFactory : public DeviceFactory {
     if (!platform_status.ok()) {
       return platform_status.status();
     }
-    auto* platform = platform_status.ValueOrDie();
+    // TF 2.15: absl::StatusOr (which tsl::StatusOr aliases to) removed
+    // ValueOrDie() in favor of value() / operator*.  Both abort on a !ok()
+    // payload, but ok() was already checked just above so this is purely a
+    // syntactic migration.
+    auto* platform = *platform_status;
     const bool allow_growth = GetMusaAllowGrowthValue();
 
     for (int i = 0; i < count; ++i) {
@@ -118,12 +121,12 @@ class MusaDeviceFactory : public DeviceFactory {
       if (!executor_status.ok()) {
         return executor_status.status();
       }
-      auto* executor = executor_status.ValueOrDie();
+      auto* executor = *executor_status;  // see ValueOrDie note above
 
       devices->push_back(std::unique_ptr<Device>(
           new MusaDevice(Env::Default(), attr, i, executor, allow_growth)));
     }
-    return Status::OK();
+    return Status();
   }
 };
 
@@ -135,33 +138,6 @@ REGISTER_LOCAL_DEVICE_FACTORY("MUSA", MusaDeviceFactory, 210);
 extern "C" {
 void __attribute__((visibility("default"))) TFMusaSetAllowGrowth(int enabled) {
   ::tensorflow::musa::SetMusaAllowGrowthOverride(enabled != 0);
-}
-
-void __attribute__((visibility("default"))) TFMusaSetTelemetryConfig(
-    int enabled, const char* log_path, unsigned long long buffer_size,
-    int flush_interval_ms, int include_stack_trace) {
-  ::tensorflow::musa::TelemetryConfig config;
-  config.enabled = enabled != 0;
-  if (log_path != nullptr) {
-    config.log_path = log_path;
-  }
-  config.buffer_size =
-      buffer_size > 0 ? static_cast<size_t>(buffer_size) : config.buffer_size;
-  config.flush_interval_ms =
-      flush_interval_ms > 0 ? flush_interval_ms : config.flush_interval_ms;
-  config.include_stack_trace = include_stack_trace != 0;
-  ::tensorflow::musa::MusaTelemetry::Instance().Initialize(config);
-}
-
-int __attribute__((visibility("default"))) TFMusaTelemetryIsEnabled() {
-  return ::tensorflow::musa::MusaTelemetry::Instance().IsEnabled() ? 1 : 0;
-}
-
-const char* __attribute__((visibility("default")))
-TFMusaGetTelemetryHealthSnapshot() {
-  static thread_local std::string snapshot;
-  snapshot = ::tensorflow::musa::MusaTelemetry::Instance().GetHealthSnapshot();
-  return snapshot.c_str();
 }
 
 void __attribute__((constructor)) OnMusaPluginLoad() {

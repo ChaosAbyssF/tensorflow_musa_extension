@@ -4,6 +4,7 @@
 #include <numeric>
 
 #include "mu/device/musa_memcpy.h"
+#include "musa_reduce_functor.h"
 #include "tensorflow/core/framework/bfloat16.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
@@ -99,36 +100,15 @@ class MusaMaxOp : public MusaOpKernel {
     OP_REQUIRES(ctx, out_reshaped.CopyFrom(*out, musa_output_shape),
                 errors::Internal("Reshape failed."));
 
-    mTensor t_in = CreateMTensor(input, format_);
-    mTensor t_out = CreateMTensor(out_reshaped, format_);
-
-    ::musa::dnn::Reduce op;
-    MTOP_CHECK_OK(op.SetMode(::musa::dnn::Reduce::Mode::MAX), "Set Reduce MAX",
-                  ctx);
-    MTOP_CHECK_OK(
-        op.SetDim(static_cast<int>(reduce_dims.size()), reduce_dims.data()),
-        "Set Reduce Dims", ctx);
-
-    // MemoryMaintainer: unique_ptr<void, function<...>> + std::function factory
-    tensorflow::Allocator* tf_allocator =
-        ctx->device()->GetAllocator(tensorflow::AllocatorAttributes());
-
-    auto alloc_func =
-        [tf_allocator](size_t size) -> ::musa::dnn::MemoryHandler {
-      void* ptr = tf_allocator->AllocateRaw(256, size);
-      std::function<void(void*)> deleter = [tf_allocator](void* p) {
-        if (p) tf_allocator->DeallocateRaw(p);
-      };
-      return ::musa::dnn::MemoryHandler(ptr, deleter);
-    };
-
-    ::musa::dnn::MemoryMaintainer mm(alloc_func);
-
-    auto status = op.Run(handle, t_out, t_in, mm);
-    OP_REQUIRES(
-        ctx, status == ::musa::dnn::Status::SUCCESS,
-        errors::Internal("MUSA muDNN Reduce Max execution failed. Status: ",
-                         static_cast<int>(status)));
+    // bf16 inputs are promoted to fp32 inside the helper. For Max the
+    // promotion is mostly a no-op numerically (no accumulation), but it
+    // keeps the dispatch path consistent with Sum/Mean/Prod and avoids
+    // bf16-specific muDNN edge cases when the comparator hits subnormals.
+    OP_REQUIRES_OK(
+        ctx, RunReduceWithFP32Promotion(
+                 ctx, input, &out_reshaped, ::musa::dnn::Reduce::Mode::MAX,
+                 reduce_dims.data(), static_cast<int>(reduce_dims.size()),
+                 "MUSA muDNN Reduce Max execution failed. Status: "));
   }
 
  private:

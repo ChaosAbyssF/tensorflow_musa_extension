@@ -73,7 +73,7 @@ Status ShapeTensorToTensorShape(const Tensor& shape_tensor,
     }
     output_shape->AddDim(dim);
   }
-  return Status::OK();
+  return Status();
 }
 
 inline void FillLaunchParams(const TensorShape& output_shape,
@@ -94,24 +94,6 @@ inline void FillLaunchParams(const TensorShape& output_shape,
     params->begin[dim] = begin[dim];
     params->strides[dim] = strides[dim];
   }
-}
-
-inline bool CanUseDenseGradCopy(
-    const TensorShape& output_shape, const TensorShape& processing_shape,
-    const gtl::InlinedVector<int64_t, 4>& begin,
-    const gtl::InlinedVector<int64_t, 4>& strides) {
-  if (output_shape.num_elements() <= 0 ||
-      output_shape.num_elements() != processing_shape.num_elements()) {
-    return false;
-  }
-
-  for (int i = 0; i < begin.size(); ++i) {
-    if (begin[i] != 0) return false;
-  }
-  for (int i = 0; i < strides.size(); ++i) {
-    if (strides[i] != 1) return false;
-  }
-  return true;
 }
 
 template <typename T>
@@ -248,18 +230,6 @@ class MusaStridedSliceGradOp : public OpKernel {
 
     mHandle& handle = GetHandleByCtx(context);
     musaStream_t stream = reinterpret_cast<musaStream_t>(handle.GetStream());
-
-    if (dy.NumElements() > 0 &&
-        CanUseDenseGradCopy(output_shape, processing_shape, begin, strides)) {
-      musaError_t err =
-          musaMemcpyAsync(output->data(), dy.data(), dy.TotalBytes(),
-                          musaMemcpyDeviceToDevice, stream);
-      OP_REQUIRES(context, err == musaSuccess,
-                  errors::Internal(
-                      "MUSA StridedSliceGrad dense copy failed: ",
-                      musaGetErrorString(err)));
-      return;
-    }
 
     musaError_t err =
         musaMemsetAsync(output->data(), 0, output->TotalBytes(), stream);

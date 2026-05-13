@@ -2,6 +2,7 @@
 
 #include "../utils_op.h"
 #include "mu/device/musa_memcpy.h"
+#include "musa_reduce_functor.h"
 #include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
@@ -95,50 +96,15 @@ class MusaProdOp : public MusaOpKernel {
     OP_REQUIRES(ctx, out_reshaped.CopyFrom(*out, musa_output_shape),
                 errors::Internal("Reshape failed."));
 
-    std::vector<std::vector<int64_t>> p_storage;
-    p_storage.reserve(4);
-
-    auto SafeSetShape = [&](mTensor& mt, const Tensor& t) {
-      int d = t.dims();
-      std::vector<int64_t> dims(d), strides(d);
-      int64_t s = 1;
-      for (int i = d - 1; i >= 0; --i) {
-        dims[i] = t.dim_size(i);
-        strides[i] = s;
-        s *= t.dim_size(i);
-      }
-      p_storage.push_back(dims);
-      p_storage.push_back(strides);
-      mt.SetNdInfo(d, p_storage[p_storage.size() - 2].data(),
-                   p_storage[p_storage.size() - 1].data());
-    };
-
-    mTensor t_in = CreateMTensor(input, format_);
-    mTensor t_out = CreateMTensor(out_reshaped, format_);
-    SafeSetShape(t_in, input);
-    SafeSetShape(t_out, out_reshaped);
-
-    mReduce op;
-    op.SetMode(::musa::dnn::Reduce::Mode::PROD);
-    op.SetDim(static_cast<int>(reduce_dims.size()), reduce_dims.data());
-
-    tensorflow::Allocator* tf_allocator =
-        ctx->device()->GetAllocator(tensorflow::AllocatorAttributes());
-    auto alloc_func =
-        [tf_allocator](
-            size_t size) -> std::unique_ptr<void, std::function<void(void*)>> {
-      void* ptr = tf_allocator->AllocateRaw(256, size);
-      auto deleter = [tf_allocator](void* p) {
-        if (p) tf_allocator->DeallocateRaw(p);
-      };
-      return std::unique_ptr<void, std::function<void(void*)>>(ptr, deleter);
-    };
-    ::musa::dnn::MemoryMaintainer mm(alloc_func);
-
-    auto status = op.Run(handle, t_out, t_in, mm);
-    OP_REQUIRES(
-        ctx, status == ::musa::dnn::Status::SUCCESS,
-        errors::Internal("MUSA Reduce Prod failed. Status: ", (int)status));
+    // bf16 inputs are promoted to fp32 inside the helper. CreateMTensor
+    // already sets contiguous-stride descriptors via muDNN's SetNdInfo
+    // (with rank+dims; muDNN fills strides for the contiguous layout),
+    // which subsumes the explicit SafeSetShape that used to live here.
+    OP_REQUIRES_OK(
+        ctx, RunReduceWithFP32Promotion(
+                 ctx, input, &out_reshaped, ::musa::dnn::Reduce::Mode::PROD,
+                 reduce_dims.data(), static_cast<int>(reduce_dims.size()),
+                 "MUSA Reduce Prod failed. Status: "));
   }
 
  private:

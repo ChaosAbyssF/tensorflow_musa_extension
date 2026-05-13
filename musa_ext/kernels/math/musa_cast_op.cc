@@ -1,10 +1,80 @@
+#include <cstdlib>
+#include <string>
+
 #include "../utils_op.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
 #include "tensorflow/core/framework/types.h"
 
+// Vectorized fast-path launchers for the four mixed-precision Cast dtype
+// pairs that dominate Keras mixed_bfloat16 / mixed_float16 training. Defined
+// in musa_cast_kernels.mu; the .mu side handles intrinsics and uint4
+// reinterprets so this .cc does not need to pull in __mt_bfloat16 / __half
+// headers.
+extern "C" {
+void LaunchMusaCastBfloat16ToFloat32(const void* src, void* dst, int64_t n,
+                                      musaStream_t stream);
+void LaunchMusaCastFloat32ToBfloat16(const void* src, void* dst, int64_t n,
+                                      musaStream_t stream);
+void LaunchMusaCastHalfToFloat32(const void* src, void* dst, int64_t n,
+                                  musaStream_t stream);
+void LaunchMusaCastFloat32ToHalf(const void* src, void* dst, int64_t n,
+                                  musaStream_t stream);
+}
+
 namespace tensorflow {
 namespace musa {
+
+namespace {
+
+inline bool UseCastCustomKernelFastPath() {
+  const char* env = std::getenv("MUSA_CAST_ENABLE_CUSTOM_KERNEL");
+  if (env == nullptr || std::string(env).empty()) return true;
+  const std::string value(env);
+  return !(value == "0" || value == "false" || value == "FALSE" ||
+           value == "off" || value == "OFF" || value == "no" || value == "NO");
+}
+
+// Returns true if the (src, dst) dtype pair has a vectorized fast-path
+// kernel and we successfully dispatched it. Returns false to let the caller
+// fall back to the generic muDNN CAST.
+bool TryLaunchMusaCastFastPath(OpKernelContext* ctx, DataType src_dtype,
+                                DataType dst_dtype, const Tensor& inp,
+                                Tensor* output) {
+  if (!UseCastCustomKernelFastPath()) return false;
+  musaStream_t stream = GetMusaStreamByCtx(ctx);
+  if (stream == nullptr) return false;
+
+  const int64_t n = inp.NumElements();
+  const void* src = inp.tensor_data().data();
+  void* dst =
+      const_cast<void*>(static_cast<const void*>(output->tensor_data().data()));
+
+  if (src_dtype == DT_BFLOAT16 && dst_dtype == DT_FLOAT) {
+    LaunchMusaCastBfloat16ToFloat32(src, dst, n, stream);
+  } else if (src_dtype == DT_FLOAT && dst_dtype == DT_BFLOAT16) {
+    LaunchMusaCastFloat32ToBfloat16(src, dst, n, stream);
+  } else if (src_dtype == DT_HALF && dst_dtype == DT_FLOAT) {
+    LaunchMusaCastHalfToFloat32(src, dst, n, stream);
+  } else if (src_dtype == DT_FLOAT && dst_dtype == DT_HALF) {
+    LaunchMusaCastFloat32ToHalf(src, dst, n, stream);
+  } else {
+    return false;
+  }
+
+  const musaError_t launch_status = musaGetLastError();
+  if (launch_status != musaSuccess) {
+    ctx->CtxFailure(errors::Internal("MUSA Cast fast path launch failed: ",
+                                      musaGetErrorString(launch_status)));
+    // Returning true here means "do not fall through" — we already set a
+    // failure on ctx. Returning false would re-invoke muDNN on top of an
+    // error which doesn't help anyone.
+    return true;
+  }
+  return true;
+}
+
+}  // namespace
 
 class MusaCastOp : public MusaOpKernel {
  public:
@@ -37,6 +107,17 @@ class MusaCastOp : public MusaOpKernel {
     if (inp.NumElements() == 0) {
       // No need to run muDNN for empty tensors. Just return the zero-element
       // output tensor (already allocated above).
+      return;
+    }
+
+    // Vectorized custom fast path for the bf16<->fp32 and fp16<->fp32 dtype
+    // pairs. These four casts dominate mixed-precision training (every
+    // dtype boundary in Keras mixed_bfloat16 / mixed_float16 issues one),
+    // so taking them out of muDNN avoids one Unary descriptor setup per
+    // boundary on top of cutting the inner-loop work to a single uint4
+    // load + store per 8 elements.
+    if (TryLaunchMusaCastFastPath(ctx, external_src_dtype_, external_dst_dtype_,
+                                    inp, output)) {
       return;
     }
 

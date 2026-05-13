@@ -1,3 +1,4 @@
+#include <musa_bf16.h>
 #include <musa_fp16.h>
 #include <musa_runtime.h>
 
@@ -26,13 +27,11 @@ __device__ __forceinline__ void StoreFloat(Eigen::half* p, double v) {
 }
 
 __device__ __forceinline__ void StoreFloat(bfloat16* p, double v) {
-  union FloatCaster {
-    float f;
-    uint32_t bits;
-  } caster;
-  caster.f = static_cast<float>(v);
-  uint16_t b_val = static_cast<uint16_t>(caster.bits >> 16);
-  *reinterpret_cast<uint16_t*>(p) = b_val;
+  // RNE rounding via MUSA SDK intrinsic (was truncate-toward-zero bit
+  // shift). For random normal samples this means the bf16 outputs have an
+  // unbiased mean — the old path biased away from 0.
+  const __mt_bfloat16 b = __float2bfloat16(static_cast<float>(v));
+  *reinterpret_cast<__mt_bfloat16*>(p) = b;
 }
 
 // ---------------------- Universal Normal Kernel ----------------------

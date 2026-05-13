@@ -5,6 +5,7 @@
 
 #include "../utils_op.h"
 #include "mu/device/musa_memcpy.h"
+#include "musa_reduce_functor.h"
 #include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/common_shape_fns.h"
 #include "tensorflow/core/framework/op.h"
@@ -103,32 +104,15 @@ class MusaMeanOp : public MusaOpKernel {
     OP_REQUIRES(ctx, out_reshaped.CopyFrom(*out, musa_output_shape),
                 errors::Internal("MUSA Mean: Reshape failed."));
 
-    mTensor t_in = CreateMTensor(input, format_);
-    mTensor t_out = CreateMTensor(out_reshaped, format_);
-
-    mReduce op;
-    op.SetMode(::musa::dnn::Reduce::Mode::MEAN);
-    op.SetDim(reduce_dims.size(), reduce_dims.data());
-
-    tensorflow::Allocator* tf_allocator =
-        ctx->device()->GetAllocator(tensorflow::AllocatorAttributes());
-
-    auto alloc_func =
-        [tf_allocator](
-            size_t size) -> std::unique_ptr<void, std::function<void(void*)>> {
-      void* ptr = tf_allocator->AllocateRaw(256, size);
-      return std::unique_ptr<void, std::function<void(void*)>>(
-          ptr, [tf_allocator](void* p) {
-            if (p) tf_allocator->DeallocateRaw(p);
-          });
-    };
-
-    ::musa::dnn::MemoryMaintainer mm(alloc_func);
-    auto status = op.Run(handle, t_out, t_in, mm);
-
-    OP_REQUIRES(
-        ctx, status == ::musa::dnn::Status::SUCCESS,
-        errors::Internal("MUSA Mean execution failed. Status: ", (int)status));
+    // bf16 inputs are promoted to fp32 inside the helper. For Mean this is
+    // a meaningful correctness fix: bf16 mean of a large tensor accumulates
+    // 7-mantissa-bit error per partial sum, so reducing 1e6 elements can
+    // bias the result by 1-2% with the old direct bf16 path.
+    OP_REQUIRES_OK(
+        ctx, RunReduceWithFP32Promotion(
+                 ctx, input, &out_reshaped, ::musa::dnn::Reduce::Mode::MEAN,
+                 reduce_dims.data(), static_cast<int>(reduce_dims.size()),
+                 "MUSA Mean execution failed. Status: "));
   }
 
  private:
