@@ -113,6 +113,84 @@ def apply_adam_mixed(var, m, v, beta1_power, beta2_power, lr, beta1, beta2,
     )
 
 
+def apply_sparse_adam_mixed(var, m, v, beta1_power, beta2_power, lr, beta1,
+                            beta2, epsilon, grad, indices, use_locking=False):
+    """Single-kernel sparse Adam update for fp32 state + low-precision grad.
+
+    Stock Keras Adam's ``_resource_apply_sparse`` (legacy and new optimizer
+    APIs both) decomposes the sparse update into 5-10 primitive ops per
+    variable -- two dense ``assign`` (m *= beta1, v *= beta2) + two
+    ``ResourceScatterAdd`` (m[indices] += ..., v[indices] += ...) + one
+    dense ``assign_sub`` for var.  On a recommendation model with N sparse
+    feature embeddings, that's ~5N primitive kernel launches per step,
+    completely dominated by launch overhead -- a profile of such a run
+    typically shows ``ResourceScatterSub_*`` / ``ResourceScatterAdd_*``
+    nodes consuming the majority of device time.
+
+    ``MusaResourceSparseApplyAdam`` is a single fused kernel that performs
+    the full sparse Adam update (var/m/v updates, including bias correction
+    and per-row Adam math) in one launch.  The plugin op constrains
+    ``T = var.dtype = m.dtype = v.dtype = grad.dtype``; since the standard
+    mixed-precision recipe keeps var/m/v in fp32, this wrapper promotes a
+    bf16/fp16 ``grad`` to fp32 once before dispatch.  That single cast on
+    a sparse-buffer-sized gradient is much cheaper than the dozens of
+    redundant casts the decomposed path materializes per variable.
+
+    Args:
+      var, m, v: fp32 resource variables.
+      beta1_power, beta2_power, lr, beta1, beta2, epsilon: fp32 scalar
+        tensors (silently cast if not already fp32).
+      grad: sparse gradient values (after dedup -- one row per unique index).
+        Dtype may be fp32, fp16, or bf16; promoted to fp32 if needed.
+      indices: 1-D int32/int64 indices into ``var``'s first dimension.
+      use_locking: forwarded to the op attr; controls slot mutex behaviour.
+
+    Returns:
+      The op result (use as a control dependency; the actual update happens
+      in place on ``var``/``m``/``v``).
+    """
+    import tensorflow as tf
+
+    ops = get_musa_ops()
+    if ops is None or not hasattr(ops, "musa_resource_sparse_apply_adam"):
+        raise RuntimeError(
+            "MusaResourceSparseApplyAdam is not registered. Did the plugin "
+            "load successfully? Check that libmusa_plugin.so was rebuilt "
+            "against a version of tensorflow_musa_extension that includes "
+            "this op."
+        )
+
+    var_handle = var.handle if hasattr(var, "handle") else var
+    m_handle = m.handle if hasattr(m, "handle") else m
+    v_handle = v.handle if hasattr(v, "handle") else v
+
+    # Promote grad to fp32 if needed -- plugin op requires uniform T across
+    # var/m/v/grad.  This is the single Cast that replaces the decomposed
+    # path's many implicit promotions.
+    if grad.dtype != tf.float32:
+        grad = tf.cast(grad, tf.float32)
+
+    def _to_fp32_scalar(value):
+        if isinstance(value, tf.Tensor) and value.dtype == tf.float32:
+            return value
+        return tf.cast(value, tf.float32)
+
+    return ops.musa_resource_sparse_apply_adam(
+        var_handle,
+        m_handle,
+        v_handle,
+        _to_fp32_scalar(beta1_power),
+        _to_fp32_scalar(beta2_power),
+        _to_fp32_scalar(lr),
+        _to_fp32_scalar(beta1),
+        _to_fp32_scalar(beta2),
+        _to_fp32_scalar(epsilon),
+        grad,
+        indices,
+        use_locking=use_locking,
+    )
+
+
 def _resolve_adam_base_class():
     """Return the Keras optimizer base class we should subclass.
 
@@ -229,6 +307,90 @@ def _make_musa_adam_class():
                 grad=grad,
                 use_locking=self._use_locking,
                 use_nesterov=False,
+            )
+
+        def _resource_apply_sparse(self, grad, var, indices, apply_state=None):
+            """Fused sparse Adam update via MusaResourceSparseApplyAdam.
+
+            The base class's implementation (see TF 2.15
+            keras/optimizer_v2/adam.py:203) decomposes the sparse update
+            into:
+
+                m_t = state_ops.assign(m, m * beta_1)            # full dense
+                m_t = scatter_add(m, indices, scaled_grad)        # sparse
+                v_t = state_ops.assign(v, v * beta_2)            # full dense
+                v_t = scatter_add(v, indices, scaled_v_grad)      # sparse
+                var = state_ops.assign_sub(var, lr * m_t /
+                                                (sqrt(v_t) + epsilon))
+
+            For a recommendation model with many sparse feature embeddings
+            this manifests in profiles as dozens of small
+            ``ResourceScatterAdd`` / ``ResourceScatterSub`` /
+            ``AssignSubVariableOp`` nodes that together dominate device
+            time -- each launch has fixed overhead independent of the
+            (small) per-batch row count.
+
+            This override collapses the entire sparse update into a single
+            ``MusaResourceSparseApplyAdam`` kernel call, mirroring what
+            ``_resource_apply_dense`` already does via
+            ``MusaResourceApplyAdamMixed``.
+
+            Fallback conditions match the dense path (non-MUSA device,
+            non-fp32 var, AMSGrad enabled, unsupported grad dtype); on
+            fallback the base-class slow path runs unchanged.
+            """
+            if self.amsgrad:
+                if not self._musa_amsgrad_warned:
+                    logger.info(
+                        "MusaAdam: AMSGrad is enabled; falling back to the "
+                        "stock sparse Adam apply path. Set amsgrad=False to "
+                        "enable the MUSA fused sparse Adam fast path."
+                    )
+                    self._musa_amsgrad_warned = True
+                return super()._resource_apply_sparse(
+                    grad, var, indices, apply_state)
+
+            var_device = var.device or ""
+            if "MUSA" not in var_device:
+                return super()._resource_apply_sparse(
+                    grad, var, indices, apply_state)
+
+            if var.dtype.base_dtype != tf.float32:
+                if not self._musa_var_dtype_warned:
+                    logger.warning(
+                        "MusaAdam: sparse variable %s has dtype %s but the "
+                        "MUSA fused sparse Adam requires fp32 state. "
+                        "Falling back to the decomposed sparse Adam path.",
+                        var.name,
+                        var.dtype,
+                    )
+                    self._musa_var_dtype_warned = True
+                return super()._resource_apply_sparse(
+                    grad, var, indices, apply_state)
+
+            if grad.dtype not in self._LOWP_GRAD_DTYPES:
+                return super()._resource_apply_sparse(
+                    grad, var, indices, apply_state)
+
+            var_dtype = var.dtype.base_dtype
+            coefficients = ((apply_state or {}).get((var_device, var_dtype)) or
+                            self._fallback_apply_state(var_device, var_dtype))
+            m = self.get_slot(var, "m")
+            v = self.get_slot(var, "v")
+
+            return apply_sparse_adam_mixed(
+                var=var,
+                m=m,
+                v=v,
+                beta1_power=coefficients["beta_1_power"],
+                beta2_power=coefficients["beta_2_power"],
+                lr=coefficients["lr_t"],
+                beta1=coefficients["beta_1_t"],
+                beta2=coefficients["beta_2_t"],
+                epsilon=coefficients["epsilon"],
+                grad=grad,
+                indices=indices,
+                use_locking=self._use_locking,
             )
 
     return MusaAdam

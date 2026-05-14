@@ -42,7 +42,7 @@ from ._graph_optimizer import (
     set_musa_graph_optimizer_enabled,
 )
 from ._loader import get_musa_devices, get_musa_ops, is_plugin_loaded, load_plugin
-from ._optimizers import apply_adam_mixed
+from ._optimizers import apply_adam_mixed, apply_sparse_adam_mixed
 from ._runtime_config import set_musa_allow_growth
 
 # Package version.
@@ -82,6 +82,7 @@ __all__ = [
     "get_musa_disabled_fusion_patterns",
     "set_musa_allow_growth",
     "apply_adam_mixed",
+    "apply_sparse_adam_mixed",
     "MusaAdam",
 ]
 
