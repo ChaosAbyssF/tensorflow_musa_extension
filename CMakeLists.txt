@@ -5,7 +5,7 @@ project(musa_plugin)
 set(CMAKE_C_COMPILER gcc)
 set(CMAKE_CXX_COMPILER g++)
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Set MUSA path
@@ -54,6 +54,49 @@ endif()
 if(NOT PYTHON_INCLUDE)
     message(FATAL_ERROR "Failed to get Python include path.")
 endif()
+
+# TensorFlow 2.15 wheels vendor an ml_dtypes float8.h revision whose float8
+# cross-conversion constructors and `fnuz` binary subtraction operators
+# instantiate conversions before the generic ConvertImpl specialization is
+# declared. GCC 11 rejects that with incomplete ConvertImpl<...> errors even
+# though this plugin does not use those float8 operators. Build a local overlay
+# instead of patching the conda env.
+set(TF_HEADER_OVERLAY_DIR "${CMAKE_CURRENT_BINARY_DIR}/tf_header_overrides")
+set(TF_FLOAT8_HEADER "${TF_INC}/ml_dtypes/include/float8.h")
+set(TF_FLOAT8_OVERLAY_HEADER "${TF_HEADER_OVERLAY_DIR}/ml_dtypes/include/float8.h")
+if(EXISTS "${TF_FLOAT8_HEADER}")
+    file(READ "${TF_FLOAT8_HEADER}" TF_FLOAT8_HEADER_CONTENT)
+    string(REGEX REPLACE
+        "explicit EIGEN_DEVICE_FUNC ([A-Za-z0-9_]+)\\(([^)]* f8)\\)\n      : \\1\\(ConvertFrom\\(f8\\)\\) \\{\\}"
+        "explicit EIGEN_DEVICE_FUNC \\1(\\2);"
+        TF_FLOAT8_HEADER_CONTENT "${TF_FLOAT8_HEADER_CONTENT}")
+    foreach(float8_type
+            float8_e4m3fn
+            float8_e4m3b11fnuz
+            float8_e4m3fnuz
+            float8_e5m2
+            float8_e5m2fnuz)
+        string(REPLACE
+            "\n      : ${float8_type}(ConvertFrom(f8)) {}"
+            ";"
+            TF_FLOAT8_HEADER_CONTENT "${TF_FLOAT8_HEADER_CONTENT}")
+    endforeach()
+    string(REPLACE
+        "  float8_e4m3b11fnuz operator-(const float8_e4m3b11fnuz& other) const {\n    return Base::operator-(other);\n  }"
+        "  float8_e4m3b11fnuz operator-(const float8_e4m3b11fnuz& other) const;"
+        TF_FLOAT8_HEADER_CONTENT "${TF_FLOAT8_HEADER_CONTENT}")
+    string(REPLACE
+        "  float8_e4m3fnuz operator-(const float8_e4m3fnuz& other) const {\n    return Base::operator-(other);\n  }"
+        "  float8_e4m3fnuz operator-(const float8_e4m3fnuz& other) const;"
+        TF_FLOAT8_HEADER_CONTENT "${TF_FLOAT8_HEADER_CONTENT}")
+    string(REPLACE
+        "  float8_e5m2fnuz operator-(const float8_e5m2fnuz& other) const {\n    return Base::operator-(other);\n  }"
+        "  float8_e5m2fnuz operator-(const float8_e5m2fnuz& other) const;"
+        TF_FLOAT8_HEADER_CONTENT "${TF_FLOAT8_HEADER_CONTENT}")
+    file(MAKE_DIRECTORY "${TF_HEADER_OVERLAY_DIR}/ml_dtypes/include")
+    file(WRITE "${TF_FLOAT8_OVERLAY_HEADER}" "${TF_FLOAT8_HEADER_CONTENT}")
+endif()
+
 set(PYBIND11_CANDIDATE_INCLUDES
     "${PYBIND11_INCLUDE}"
     "${TF_INC}/external/pybind11/include"
@@ -98,7 +141,7 @@ set(TF_COMPILE_FLAGS "${TF_COMPILE_FLAGS} -D_GLIBCXX_USE_CXX11_ABI=1")
 set(TF_COMPILE_FLAGS "${TF_COMPILE_FLAGS} -DMUSA_DISABLE_DEBUG_LOGGING -DNDEBUG -DMUSA_DISABLE_TRACE_LOGGING -DMUSA_DISABLE_AUTO_TRACE")
 
 # Include paths
-include_directories("${TF_INC}" "${MUSA_PATH}/include")
+include_directories("${TF_HEADER_OVERLAY_DIR}" "${TF_INC}" "${MUSA_PATH}/include")
 if(EXISTS "${MUSA_PATH}/include/mudnncxx")
     include_directories("${MUSA_PATH}/include/mudnncxx")
 endif()
