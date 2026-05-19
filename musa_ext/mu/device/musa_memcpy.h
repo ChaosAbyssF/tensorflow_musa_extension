@@ -2,6 +2,8 @@
 #define MUSA_PLUGIN_SRC_MU_DEVICE_MUSA_MEMCPY_H_
 
 #include <mudnn.h>
+#include <mudnncxx/mudnn_base.h>
+#include <mudnncxx/mudnn_tensor.h>
 #include <musa_runtime_api.h>
 
 #include "kernel_register.h"

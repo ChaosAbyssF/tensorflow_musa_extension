@@ -2,6 +2,7 @@
 #define MUSA_PLUGIN_SRC_UTILS_LOGGING_H_
 
 #include <mudnn.h>
+#include <mudnncxx/mudnn_base.h>
 #include <musa_runtime.h>
 
 #include "tensorflow/core/platform/logging.h"

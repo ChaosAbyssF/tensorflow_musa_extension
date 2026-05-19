@@ -5,7 +5,9 @@ project(musa_plugin)
 set(CMAKE_C_COMPILER gcc)
 set(CMAKE_CXX_COMPILER g++)
 
-set(CMAKE_CXX_STANDARD 14)
+# TensorFlow 2.15 headers include ml_dtypes float8 code that uses C++17
+# language/library features such as if constexpr and std::is_same_v.
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Set MUSA path

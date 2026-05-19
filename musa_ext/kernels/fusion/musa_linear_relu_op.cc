@@ -1,5 +1,5 @@
 #include <mudnn.h>
-#include <mudnn_xmma.h>
+#include <mudnncxx/mudnn_xmma.h>
 
 #include <cstdlib>
 

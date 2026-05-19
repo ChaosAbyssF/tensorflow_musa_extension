@@ -2,6 +2,10 @@
 #define MUSA_PLUGIN_SRC_KERNELS_UTILS_H_
 
 #include <mudnn.h>
+#include <mudnncxx/mudnn_base.h>
+#include <mudnncxx/mudnn_ops.h>
+#include <mudnncxx/mudnn_tensor.h>
+#include <mudnncxx/mudnn_xmma.h>
 
 #include <vector>
 
