@@ -17,6 +17,7 @@ limitations under the License.
 #define TENSORFLOW_MUSA_MU_MUSA_RUNTIME_REGISTRY_H_
 
 #include <mudnn.h>
+#include <mudnncxx/mudnn_base.h>
 #include <musa_runtime.h>
 
 #include <cstddef>

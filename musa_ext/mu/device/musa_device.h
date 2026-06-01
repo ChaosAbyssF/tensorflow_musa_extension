@@ -12,7 +12,7 @@
 #include <queue>
 #include <thread>
 
-#include "mudnn_base.h"
+#include <mudnncxx/mudnn_base.h>
 #include "musa_allocator.h"
 #include "musa_event_mgr.h"
 #include "musa_host_allocator.h"
