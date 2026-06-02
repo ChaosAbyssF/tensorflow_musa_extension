@@ -31,10 +31,13 @@ class MusaOneTrans3DEinsumTest(XlaOpTestCase):
             with self.subTest(equation=equation):
                 with tf.device("/CPU:0"):
                     expected = tf.einsum(equation, a_np, b_np)
-                with tf.device("/device:MUSA:0"):
-                    actual = MUSA_OPS.musa_one_trans3d_einsum(
-                        a=tf.constant(a_np), b=tf.constant(b_np), equation=equation
-                    )
+                actual = self.run_xla(
+                    lambda a, b: MUSA_OPS.musa_one_trans3d_einsum(
+                        a=a, b=b, equation=equation
+                    ),
+                    tf.constant(a_np),
+                    tf.constant(b_np),
+                )
                 self.assertTensorClose(actual, expected)
 
 

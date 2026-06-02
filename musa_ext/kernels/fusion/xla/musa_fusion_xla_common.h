@@ -139,7 +139,8 @@ inline xla::XlaOp BroadcastRows(xla::XlaOp op, int64_t num_rows,
 
 inline xla::XlaOp BroadcastCols(xla::XlaOp op, int64_t num_rows,
                                 int64_t row_size) {
-  return xla::BroadcastInDim(op, {num_rows, row_size}, {0, 1});
+  return xla::BroadcastInDim(xla::Reshape(op, {num_rows}), {num_rows, row_size},
+                             {0});
 }
 
 inline xla::XlaOp OnesColumn(xla::XlaBuilder* b, DataType dtype,
@@ -154,37 +155,25 @@ inline xla::XlaOp OnesRow(xla::XlaBuilder* b, DataType dtype, int64_t cols) {
 inline xla::XlaOp RowWiseSum2D(XlaOpKernelContext* ctx, xla::XlaOp matrix,
                                DataType dtype, int64_t num_rows,
                                int64_t row_size) {
-  xla::DotDimensionNumbers dnums;
-  dnums.add_lhs_contracting_dimensions(1);
-  dnums.add_rhs_contracting_dimensions(0);
-  xla::PrecisionConfig precision_config;
-  precision_config.add_operand_precision(
-      tsl::tensor_float_32_execution_enabled() ? xla::PrecisionConfig::DEFAULT
-                                               : xla::PrecisionConfig::HIGHEST);
-  precision_config.add_operand_precision(
-      tsl::tensor_float_32_execution_enabled() ? xla::PrecisionConfig::DEFAULT
-                                               : xla::PrecisionConfig::HIGHEST);
-  return xla::DotGeneral(matrix, OnesColumn(ctx->builder(), dtype, row_size),
-                         dnums, &precision_config,
-                         /*preferred_element_type=*/std::nullopt);
+  const DataType accumulation_type = XlaHelpers::SumAccumulationType(dtype);
+  xla::XlaOp converted = ConvertTo(matrix, accumulation_type);
+  xla::XlaOp sum = xla::Slice(converted, {0, 0}, {num_rows, 1}, {1, 1});
+  for (int64_t col = 1; col < row_size; ++col) {
+    sum = sum + xla::Slice(converted, {0, col}, {num_rows, col + 1}, {1, 1});
+  }
+  return ConvertTo(sum, dtype);
 }
 
 inline xla::XlaOp SumAcrossRows2D(XlaOpKernelContext* ctx, xla::XlaOp matrix,
                                   DataType dtype, int64_t num_rows,
                                   int64_t row_size) {
-  xla::DotDimensionNumbers dnums;
-  dnums.add_lhs_contracting_dimensions(1);
-  dnums.add_rhs_contracting_dimensions(0);
-  xla::PrecisionConfig precision_config;
-  precision_config.add_operand_precision(
-      tsl::tensor_float_32_execution_enabled() ? xla::PrecisionConfig::DEFAULT
-                                               : xla::PrecisionConfig::HIGHEST);
-  precision_config.add_operand_precision(
-      tsl::tensor_float_32_execution_enabled() ? xla::PrecisionConfig::DEFAULT
-                                               : xla::PrecisionConfig::HIGHEST);
-  return xla::DotGeneral(OnesRow(ctx->builder(), dtype, num_rows), matrix,
-                         dnums, &precision_config,
-                         /*preferred_element_type=*/std::nullopt);
+  const DataType accumulation_type = XlaHelpers::SumAccumulationType(dtype);
+  xla::XlaOp converted = ConvertTo(matrix, accumulation_type);
+  xla::XlaOp sum = xla::Slice(converted, {0, 0}, {1, row_size}, {1, 1});
+  for (int64_t row = 1; row < num_rows; ++row) {
+    sum = sum + xla::Slice(converted, {row, 0}, {row + 1, row_size}, {1, 1});
+  }
+  return ConvertTo(sum, dtype);
 }
 
 inline void CompileNormalize(XlaOpKernelContext* ctx, bool use_affine,
